@@ -611,15 +611,50 @@ fn create_system_command(claude_path: &str, args: Vec<String>, project_path: &st
     cmd
 }
 
-/// Applies an explicit thinking budget to the claude subprocess.
+/// Appends `--effort <level>` so the CLI controls reasoning depth natively.
 ///
-/// Claude Code reads `MAX_THINKING_TOKENS` from the environment; this is the
-/// supported way to control reasoning depth. The older approach of appending
-/// phrases like "think hard" to the prompt is a no-op in current versions.
-fn apply_thinking_budget(cmd: &mut Command, thinking_tokens: Option<u32>) {
-    if let Some(tokens) = thinking_tokens {
-        if tokens > 0 {
-            cmd.env("MAX_THINKING_TOKENS", tokens.to_string());
+/// Valid levels in Claude Code 2.1.323: low, medium, high, xhigh, max.
+/// Omitted entirely when the caller picks "Auto", letting the session default apply.
+fn push_effort_arg(args: &mut Vec<String>, effort: Option<&str>) {
+    if let Some(level) = effort {
+        let level = level.trim();
+        if !level.is_empty() {
+            args.push("--effort".to_string());
+            args.push(level.to_string());
+        }
+    }
+}
+
+#[cfg(test)]
+mod effort_arg_tests {
+    use super::push_effort_arg;
+
+    #[test]
+    fn appends_flag_and_level() {
+        let mut args: Vec<String> = Vec::new();
+        push_effort_arg(&mut args, Some("high"));
+        assert_eq!(args, vec!["--effort".to_string(), "high".to_string()]);
+    }
+
+    #[test]
+    fn omits_flag_for_auto() {
+        let mut args: Vec<String> = Vec::new();
+        push_effort_arg(&mut args, None);
+        assert!(args.is_empty());
+        push_effort_arg(&mut args, Some(""));
+        assert!(args.is_empty());
+        push_effort_arg(&mut args, Some("   "));
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn accepts_every_documented_level() {
+        for level in ["low", "medium", "high", "xhigh", "max"] {
+            let mut args: Vec<String> = Vec::new();
+            push_effort_arg(&mut args, Some(level));
+            assert_eq!(args.len(), 2);
+            assert_eq!(args[0], "--effort");
+            assert_eq!(args[1], level);
         }
     }
 }
@@ -1240,7 +1275,7 @@ pub async fn execute_claude_code(
     project_path: String,
     prompt: String,
     model: String,
-    thinking_tokens: Option<u32>,
+    effort: Option<String>,
 ) -> Result<(), String> {
     log::info!(
         "Starting new Claude Code session in: {} with model: {}",
@@ -1250,7 +1285,7 @@ pub async fn execute_claude_code(
 
     let claude_path = find_claude_binary(&app)?;
 
-    let args = vec![
+    let mut args = vec![
         "-p".to_string(),
         prompt.clone(),
         "--model".to_string(),
@@ -1260,9 +1295,9 @@ pub async fn execute_claude_code(
         "--verbose".to_string(),
         "--dangerously-skip-permissions".to_string(),
     ];
+    push_effort_arg(&mut args, effort.as_deref());
 
-    let mut cmd = create_system_command(&claude_path, args, &project_path);
-    apply_thinking_budget(&mut cmd, thinking_tokens);
+    let cmd = create_system_command(&claude_path, args, &project_path);
     spawn_claude_process(app, cmd, prompt, model, project_path).await
 }
 
@@ -1273,7 +1308,7 @@ pub async fn continue_claude_code(
     project_path: String,
     prompt: String,
     model: String,
-    thinking_tokens: Option<u32>,
+    effort: Option<String>,
 ) -> Result<(), String> {
     log::info!(
         "Continuing Claude Code conversation in: {} with model: {}",
@@ -1283,7 +1318,7 @@ pub async fn continue_claude_code(
 
     let claude_path = find_claude_binary(&app)?;
 
-    let args = vec![
+    let mut args = vec![
         "-c".to_string(), // Continue flag
         "-p".to_string(),
         prompt.clone(),
@@ -1294,9 +1329,9 @@ pub async fn continue_claude_code(
         "--verbose".to_string(),
         "--dangerously-skip-permissions".to_string(),
     ];
+    push_effort_arg(&mut args, effort.as_deref());
 
-    let mut cmd = create_system_command(&claude_path, args, &project_path);
-    apply_thinking_budget(&mut cmd, thinking_tokens);
+    let cmd = create_system_command(&claude_path, args, &project_path);
     spawn_claude_process(app, cmd, prompt, model, project_path).await
 }
 
@@ -1308,7 +1343,7 @@ pub async fn resume_claude_code(
     session_id: String,
     prompt: String,
     model: String,
-    thinking_tokens: Option<u32>,
+    effort: Option<String>,
 ) -> Result<(), String> {
     log::info!(
         "Resuming Claude Code session: {} in: {} with model: {}",
@@ -1319,7 +1354,7 @@ pub async fn resume_claude_code(
 
     let claude_path = find_claude_binary(&app)?;
 
-    let args = vec![
+    let mut args = vec![
         "--resume".to_string(),
         session_id.clone(),
         "-p".to_string(),
@@ -1331,9 +1366,9 @@ pub async fn resume_claude_code(
         "--verbose".to_string(),
         "--dangerously-skip-permissions".to_string(),
     ];
+    push_effort_arg(&mut args, effort.as_deref());
 
-    let mut cmd = create_system_command(&claude_path, args, &project_path);
-    apply_thinking_budget(&mut cmd, thinking_tokens);
+    let cmd = create_system_command(&claude_path, args, &project_path);
     spawn_claude_process(app, cmd, prompt, model, project_path).await
 }
 

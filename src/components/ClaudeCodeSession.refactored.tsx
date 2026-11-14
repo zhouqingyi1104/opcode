@@ -51,7 +51,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
   const [showSlashCommandsSettings, setShowSlashCommandsSettings] = useState(false);
   const [forkCheckpointId, setForkCheckpointId] = useState<string | null>(null);
   const [forkSessionName, setForkSessionName] = useState("");
-  const [queuedPrompts, setQueuedPrompts] = useState<Array<{ id: string; prompt: string; model: string; thinkingTokens?: number }>>([]);
+  const [queuedPrompts, setQueuedPrompts] = useState<Array<{ id: string; prompt: string; model: string; effort?: string }>>([]);
   const [showPreview, setShowPreview] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isPreviewMaximized, setIsPreviewMaximized] = useState(false);
@@ -106,7 +106,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
   };
 
   // Handle sending prompts
-  const handleSendPrompt = useCallback(async (prompt: string, model: string, thinkingTokens?: number) => {
+  const handleSendPrompt = useCallback(async (prompt: string, model: string, effort?: string) => {
     console.log('[TRACE] handleSendPrompt called:');
     console.log('[TRACE]   prompt length:', prompt.length);
     console.log('[TRACE]   model:', model);
@@ -134,12 +134,12 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
       
       if (isFirstPrompt) {
         console.log('[TRACE] First prompt - calling api.executeClaudeCode');
-        await api.executeClaudeCode(projectPath, prompt, model, thinkingTokens);
+        await api.executeClaudeCode(projectPath, prompt, model, effort);
         setIsFirstPrompt(false);
         console.log('[TRACE] executeClaudeCode completed');
       } else if (claudeSessionId) {
         console.log('[TRACE] Continue prompt - calling api.continueClaudeCode');
-        await api.continueClaudeCode(projectPath, prompt, model, thinkingTokens);
+        await api.continueClaudeCode(projectPath, prompt, model, effort);
         console.log('[TRACE] continueClaudeCode completed');
       } else {
         console.log('[TRACE] No claude session ID for continue');

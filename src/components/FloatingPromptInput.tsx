@@ -32,7 +32,7 @@ interface FloatingPromptInputProps {
   /**
    * Callback when prompt is sent
    */
-  onSend: (prompt: string, model: ModelId, thinkingTokens?: number) => void;
+  onSend: (prompt: string, model: ModelId, effort?: EffortLevel) => void;
   /**
    * Whether the input is loading
    */
@@ -70,7 +70,13 @@ export interface FloatingPromptInputRef {
 /**
  * Thinking mode type definition
  */
-type ThinkingMode = "auto" | "think" | "think_hard" | "think_harder" | "ultrathink";
+/**
+ * Effort levels accepted by `claude --effort`.
+ * Verified against Claude Code 2.1.323: low, medium, high, xhigh, max.
+ */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
+type ThinkingMode = "auto" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
  * Thinking mode configuration
@@ -79,12 +85,12 @@ type ThinkingModeConfig = {
   id: ThinkingMode;
   name: string;
   description: string;
-  level: number; // 0-4 for visual indicator
+  level: number; // 0-5 for visual indicator
   /**
-   * Value for MAX_THINKING_TOKENS passed to the claude subprocess.
-   * undefined => leave it unset and let Claude decide.
+   * Value passed to `claude --effort <level>`.
+   * undefined => omit the flag and use the session default.
    */
-  budget?: number;
+  effort?: EffortLevel;
   icon: React.ReactNode;
   color: string;
   shortName: string;
@@ -94,51 +100,61 @@ const THINKING_MODES: ThinkingModeConfig[] = [
   {
     id: "auto",
     name: "Auto",
-    description: "Let Claude decide",
+    description: "Session default",
     level: 0,
     icon: <Sparkles className="h-3.5 w-3.5" />,
     color: "text-muted-foreground",
     shortName: "A"
   },
   {
-    id: "think",
-    name: "Think",
-    description: "2K thinking budget",
+    id: "low",
+    name: "Low",
+    description: "Minimal reasoning, fastest",
     level: 1,
-    budget: 2048,
+    effort: "low",
     icon: <Lightbulb className="h-3.5 w-3.5" />,
     color: "text-primary",
-    shortName: "T"
+    shortName: "L"
   },
   {
-    id: "think_hard",
-    name: "Think Hard",
-    description: "8K thinking budget",
+    id: "medium",
+    name: "Medium",
+    description: "Balanced reasoning",
     level: 2,
-    budget: 8192,
+    effort: "medium",
     icon: <Brain className="h-3.5 w-3.5" />,
     color: "text-primary",
-    shortName: "T+"
+    shortName: "M"
   },
   {
-    id: "think_harder",
-    name: "Think Harder",
-    description: "16K thinking budget",
+    id: "high",
+    name: "High",
+    description: "Deeper reasoning",
     level: 3,
-    budget: 16384,
+    effort: "high",
     icon: <Cpu className="h-3.5 w-3.5" />,
     color: "text-primary",
-    shortName: "T++"
+    shortName: "H"
   },
   {
-    id: "ultrathink",
-    name: "Ultrathink",
-    description: "32K thinking budget",
+    id: "xhigh",
+    name: "X-High",
+    description: "Extensive reasoning",
     level: 4,
-    budget: 31999,
+    effort: "xhigh",
     icon: <Rocket className="h-3.5 w-3.5" />,
     color: "text-primary",
-    shortName: "Ultra"
+    shortName: "XH"
+  },
+  {
+    id: "max",
+    name: "Max",
+    description: "Maximum effort",
+    level: 5,
+    effort: "max",
+    icon: <Rocket className="h-3.5 w-3.5" />,
+    color: "text-primary",
+    shortName: "MAX"
   }
 ];
 
@@ -153,7 +169,7 @@ const ThinkingModeIndicator: React.FC<{ level: number; color?: string }> = ({ le
   
   return (
     <div className="flex items-center gap-0.5">
-      {[1, 2, 3, 4].map((i) => (
+      {[1, 2, 3, 4, 5].map((i) => (
         <div
           key={i}
           className={cn(
@@ -697,11 +713,11 @@ const FloatingPromptInputInner = (
     if (prompt.trim() && !disabled) {
       const finalPrompt = prompt.trim();
 
-      // Thinking is now controlled by MAX_THINKING_TOKENS on the subprocess,
-      // not by appending magic phrases to the prompt text.
+      // Thinking depth is controlled by `claude --effort <level>` on the
+      // subprocess; the prompt text is left untouched.
       const thinkingMode = THINKING_MODES.find(m => m.id === selectedThinkingMode);
 
-      onSend(finalPrompt, selectedModel, thinkingMode?.budget);
+      onSend(finalPrompt, selectedModel, thinkingMode?.effort);
       setPrompt("");
       setEmbeddedImages([]);
       setTextareaHeight(48); // Reset height after sending
