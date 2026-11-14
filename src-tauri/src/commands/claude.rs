@@ -611,6 +611,19 @@ fn create_system_command(claude_path: &str, args: Vec<String>, project_path: &st
     cmd
 }
 
+/// Applies an explicit thinking budget to the claude subprocess.
+///
+/// Claude Code reads `MAX_THINKING_TOKENS` from the environment; this is the
+/// supported way to control reasoning depth. The older approach of appending
+/// phrases like "think hard" to the prompt is a no-op in current versions.
+fn apply_thinking_budget(cmd: &mut Command, thinking_tokens: Option<u32>) {
+    if let Some(tokens) = thinking_tokens {
+        if tokens > 0 {
+            cmd.env("MAX_THINKING_TOKENS", tokens.to_string());
+        }
+    }
+}
+
 /// Gets the user's home directory path
 #[tauri::command]
 pub async fn get_home_directory() -> Result<String, String> {
@@ -1227,6 +1240,7 @@ pub async fn execute_claude_code(
     project_path: String,
     prompt: String,
     model: String,
+    thinking_tokens: Option<u32>,
 ) -> Result<(), String> {
     log::info!(
         "Starting new Claude Code session in: {} with model: {}",
@@ -1247,7 +1261,8 @@ pub async fn execute_claude_code(
         "--dangerously-skip-permissions".to_string(),
     ];
 
-    let cmd = create_system_command(&claude_path, args, &project_path);
+    let mut cmd = create_system_command(&claude_path, args, &project_path);
+    apply_thinking_budget(&mut cmd, thinking_tokens);
     spawn_claude_process(app, cmd, prompt, model, project_path).await
 }
 
@@ -1258,6 +1273,7 @@ pub async fn continue_claude_code(
     project_path: String,
     prompt: String,
     model: String,
+    thinking_tokens: Option<u32>,
 ) -> Result<(), String> {
     log::info!(
         "Continuing Claude Code conversation in: {} with model: {}",
@@ -1279,7 +1295,8 @@ pub async fn continue_claude_code(
         "--dangerously-skip-permissions".to_string(),
     ];
 
-    let cmd = create_system_command(&claude_path, args, &project_path);
+    let mut cmd = create_system_command(&claude_path, args, &project_path);
+    apply_thinking_budget(&mut cmd, thinking_tokens);
     spawn_claude_process(app, cmd, prompt, model, project_path).await
 }
 
@@ -1291,6 +1308,7 @@ pub async fn resume_claude_code(
     session_id: String,
     prompt: String,
     model: String,
+    thinking_tokens: Option<u32>,
 ) -> Result<(), String> {
     log::info!(
         "Resuming Claude Code session: {} in: {} with model: {}",
@@ -1314,7 +1332,8 @@ pub async fn resume_claude_code(
         "--dangerously-skip-permissions".to_string(),
     ];
 
-    let cmd = create_system_command(&claude_path, args, &project_path);
+    let mut cmd = create_system_command(&claude_path, args, &project_path);
+    apply_thinking_budget(&mut cmd, thinking_tokens);
     spawn_claude_process(app, cmd, prompt, model, project_path).await
 }
 

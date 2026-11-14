@@ -25,13 +25,14 @@ import { ImagePreview } from "./ImagePreview";
 import { type FileEntry, type SlashCommand } from "@/lib/api";
 import { isTauriRuntime } from "@/lib/apiAdapter";
 import { isAnyElementVisible } from "@/lib/domVisibility";
+import { MODELS as MODEL_REGISTRY, DEFAULT_MODEL, type ModelId } from "@/lib/models";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 interface FloatingPromptInputProps {
   /**
    * Callback when prompt is sent
    */
-  onSend: (prompt: string, model: "sonnet" | "opus") => void;
+  onSend: (prompt: string, model: ModelId, thinkingTokens?: number) => void;
   /**
    * Whether the input is loading
    */
@@ -43,7 +44,7 @@ interface FloatingPromptInputProps {
   /**
    * Default model to select
    */
-  defaultModel?: "sonnet" | "opus";
+  defaultModel?: ModelId;
   /**
    * Project path for file picker
    */
@@ -79,7 +80,11 @@ type ThinkingModeConfig = {
   name: string;
   description: string;
   level: number; // 0-4 for visual indicator
-  phrase?: string; // The phrase to append
+  /**
+   * Value for MAX_THINKING_TOKENS passed to the claude subprocess.
+   * undefined => leave it unset and let Claude decide.
+   */
+  budget?: number;
   icon: React.ReactNode;
   color: string;
   shortName: string;
@@ -98,9 +103,9 @@ const THINKING_MODES: ThinkingModeConfig[] = [
   {
     id: "think",
     name: "Think",
-    description: "Basic reasoning",
+    description: "2K thinking budget",
     level: 1,
-    phrase: "think",
+    budget: 2048,
     icon: <Lightbulb className="h-3.5 w-3.5" />,
     color: "text-primary",
     shortName: "T"
@@ -108,9 +113,9 @@ const THINKING_MODES: ThinkingModeConfig[] = [
   {
     id: "think_hard",
     name: "Think Hard",
-    description: "Deeper analysis",
+    description: "8K thinking budget",
     level: 2,
-    phrase: "think hard",
+    budget: 8192,
     icon: <Brain className="h-3.5 w-3.5" />,
     color: "text-primary",
     shortName: "T+"
@@ -118,9 +123,9 @@ const THINKING_MODES: ThinkingModeConfig[] = [
   {
     id: "think_harder",
     name: "Think Harder",
-    description: "Extensive reasoning",
+    description: "16K thinking budget",
     level: 3,
-    phrase: "think harder",
+    budget: 16384,
     icon: <Cpu className="h-3.5 w-3.5" />,
     color: "text-primary",
     shortName: "T++"
@@ -128,9 +133,9 @@ const THINKING_MODES: ThinkingModeConfig[] = [
   {
     id: "ultrathink",
     name: "Ultrathink",
-    description: "Maximum computation",
+    description: "32K thinking budget",
     level: 4,
-    phrase: "ultrathink",
+    budget: 31999,
     icon: <Rocket className="h-3.5 w-3.5" />,
     color: "text-primary",
     shortName: "Ultra"
@@ -163,7 +168,7 @@ const ThinkingModeIndicator: React.FC<{ level: number; color?: string }> = ({ le
 };
 
 type Model = {
-  id: "sonnet" | "opus";
+  id: ModelId;
   name: string;
   description: string;
   icon: React.ReactNode;
@@ -171,24 +176,19 @@ type Model = {
   color: string;
 };
 
-const MODELS: Model[] = [
-  {
-    id: "sonnet",
-    name: "Claude 4 Sonnet",
-    description: "Faster, efficient for most tasks",
-    icon: <Zap className="h-3.5 w-3.5" />,
-    shortName: "S",
-    color: "text-primary"
-  },
-  {
-    id: "opus",
-    name: "Claude 4 Opus",
-    description: "More capable, better for complex tasks",
-    icon: <Zap className="h-3.5 w-3.5" />,
-    shortName: "O",
-    color: "text-primary"
-  }
-];
+// Icons stay presentational only; the model list itself lives in @/lib/models
+const MODEL_ICONS: Record<string, React.ReactNode> = {
+  "claude-opus-5-5": <Cpu className="h-3.5 w-3.5" />,
+  "claude-sonnet-5-5": <Zap className="h-3.5 w-3.5" />,
+  "claude-haiku-5-5": <Zap className="h-3.5 w-3.5" />,
+  "claude-fable-5-2": <Sparkles className="h-3.5 w-3.5" />,
+};
+
+const MODELS: Model[] = MODEL_REGISTRY.map((m) => ({
+  ...m,
+  icon: MODEL_ICONS[m.id] ?? <Zap className="h-3.5 w-3.5" />,
+  color: "text-primary",
+}));
 
 /**
  * FloatingPromptInput component - Fixed position prompt input with model picker
@@ -206,7 +206,7 @@ const FloatingPromptInputInner = (
     onSend,
     isLoading = false,
     disabled = false,
-    defaultModel = "sonnet",
+    defaultModel = DEFAULT_MODEL,
     projectPath,
     className,
     onCancel,
@@ -215,7 +215,7 @@ const FloatingPromptInputInner = (
   ref: React.Ref<FloatingPromptInputRef>,
 ) => {
   const [prompt, setPrompt] = useState("");
-  const [selectedModel, setSelectedModel] = useState<"sonnet" | "opus">(defaultModel);
+  const [selectedModel, setSelectedModel] = useState<ModelId>(defaultModel ?? DEFAULT_MODEL);
   const [selectedThinkingMode, setSelectedThinkingMode] = useState<ThinkingMode>("auto");
   const [isExpanded, setIsExpanded] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
@@ -695,15 +695,13 @@ const FloatingPromptInputInner = (
     }
 
     if (prompt.trim() && !disabled) {
-      let finalPrompt = prompt.trim();
+      const finalPrompt = prompt.trim();
 
-      // Append thinking phrase if not auto mode
+      // Thinking is now controlled by MAX_THINKING_TOKENS on the subprocess,
+      // not by appending magic phrases to the prompt text.
       const thinkingMode = THINKING_MODES.find(m => m.id === selectedThinkingMode);
-      if (thinkingMode && thinkingMode.phrase) {
-        finalPrompt = `${finalPrompt}.\n\n${thinkingMode.phrase}.`;
-      }
 
-      onSend(finalPrompt, selectedModel);
+      onSend(finalPrompt, selectedModel, thinkingMode?.budget);
       setPrompt("");
       setEmbeddedImages([]);
       setTextareaHeight(48); // Reset height after sending

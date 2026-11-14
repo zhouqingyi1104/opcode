@@ -20,6 +20,7 @@ import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Toast } from '@/components/ui/toast';
 import { api, type Agent, type AgentRunWithMetrics } from '@/lib/api';
+import { getModelLabel } from '@/lib/models';
 import { useTabState } from '@/hooks/useTabState';
 import { formatISOTimestamp } from '@/lib/date-utils';
 import { open as openDialog, save } from '@tauri-apps/plugin-dialog';
@@ -378,7 +379,7 @@ export const AgentsModal: React.FC<AgentsModalProps> = ({ open, onOpenChange }) 
                               <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
                                 <span>Started: {formatISOTimestamp(run.created_at)}</span>
                                 <Badge variant="outline" className="text-xs">
-                                  {run.model === 'opus' ? 'Claude 4 Opus' : 'Claude 4 Sonnet'}
+                                  {getModelLabel(run.model)}
                                 </Badge>
                               </div>
                             </div>

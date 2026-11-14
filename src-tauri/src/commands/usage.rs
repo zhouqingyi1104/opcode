@@ -63,16 +63,87 @@ pub struct ProjectUsage {
     last_used: String,
 }
 
-// Claude 4 pricing constants (per million tokens)
-const OPUS_4_INPUT_PRICE: f64 = 15.0;
-const OPUS_4_OUTPUT_PRICE: f64 = 75.0;
-const OPUS_4_CACHE_WRITE_PRICE: f64 = 18.75;
-const OPUS_4_CACHE_READ_PRICE: f64 = 1.50;
+/// Per-million-token pricing for a single model family.
+/// Cache creation has two tiers (5 minute / 1 hour) which bill differently.
+struct ModelPricing {
+    input: f64,
+    output: f64,
+    cache_write_5m: f64,
+    cache_write_1h: f64,
+    cache_read: f64,
+}
 
-const SONNET_4_INPUT_PRICE: f64 = 3.0;
-const SONNET_4_OUTPUT_PRICE: f64 = 15.0;
-const SONNET_4_CACHE_WRITE_PRICE: f64 = 3.75;
-const SONNET_4_CACHE_READ_PRICE: f64 = 0.30;
+// Current generation
+const FABLE_5_2: ModelPricing = ModelPricing {
+    input: 4.4,
+    output: 22.0,
+    cache_write_5m: 5.5,
+    cache_write_1h: 8.8,
+    cache_read: 0.11,
+};
+
+const OPUS_5_5: ModelPricing = ModelPricing {
+    input: 2.2,
+    output: 11.0,
+    cache_write_5m: 2.75,
+    cache_write_1h: 4.4,
+    cache_read: 0.11,
+};
+
+const SONNET_5_5: ModelPricing = ModelPricing {
+    input: 1.1,
+    output: 5.5,
+    cache_write_5m: 1.375,
+    cache_write_1h: 2.2,
+    cache_read: 0.055,
+};
+
+const HAIKU_5_5: ModelPricing = ModelPricing {
+    input: 0.055,
+    output: 0.275,
+    cache_write_5m: 0.06875,
+    cache_write_1h: 0.11,
+    cache_read: 0.0055,
+};
+
+// Previous generation (single cache-write tier, mirrored into both slots)
+const OPUS_4: ModelPricing = ModelPricing {
+    input: 15.0,
+    output: 75.0,
+    cache_write_5m: 18.75,
+    cache_write_1h: 18.75,
+    cache_read: 1.50,
+};
+
+const SONNET_4: ModelPricing = ModelPricing {
+    input: 3.0,
+    output: 15.0,
+    cache_write_5m: 3.75,
+    cache_write_1h: 3.75,
+    cache_read: 0.30,
+};
+
+/// Resolve pricing by matching the model string. Order matters: the newest
+/// generation is checked first, and `fable` before the others since it has no
+/// shared substring with them.
+fn pricing_for(model: &str) -> Option<&'static ModelPricing> {
+    let m = model.to_lowercase();
+    if m.contains("fable-5") {
+        Some(&FABLE_5_2)
+    } else if m.contains("opus-5") {
+        Some(&OPUS_5_5)
+    } else if m.contains("sonnet-5") {
+        Some(&SONNET_5_5)
+    } else if m.contains("haiku-5") {
+        Some(&HAIKU_5_5)
+    } else if m.contains("opus-4") {
+        Some(&OPUS_4)
+    } else if m.contains("sonnet-4") {
+        Some(&SONNET_4)
+    } else {
+        None
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct JsonlEntry {
@@ -94,47 +165,143 @@ struct MessageData {
 }
 
 #[derive(Debug, Deserialize)]
+struct CacheCreation {
+    ephemeral_5m_input_tokens: Option<u64>,
+    ephemeral_1h_input_tokens: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct UsageData {
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
     cache_creation_input_tokens: Option<u64>,
     cache_read_input_tokens: Option<u64>,
+    cache_creation: Option<CacheCreation>,
 }
 
 fn calculate_cost(model: &str, usage: &UsageData) -> f64 {
+    let Some(pricing) = pricing_for(model) else {
+        // Return 0 for unknown models to avoid incorrect cost estimations.
+        return 0.0;
+    };
+
     let input_tokens = usage.input_tokens.unwrap_or(0) as f64;
     let output_tokens = usage.output_tokens.unwrap_or(0) as f64;
     let cache_creation_tokens = usage.cache_creation_input_tokens.unwrap_or(0) as f64;
     let cache_read_tokens = usage.cache_read_input_tokens.unwrap_or(0) as f64;
 
-    // Calculate cost based on model
-    let (input_price, output_price, cache_write_price, cache_read_price) =
-        if model.contains("opus-4") || model.contains("claude-opus-4") {
-            (
-                OPUS_4_INPUT_PRICE,
-                OPUS_4_OUTPUT_PRICE,
-                OPUS_4_CACHE_WRITE_PRICE,
-                OPUS_4_CACHE_READ_PRICE,
-            )
-        } else if model.contains("sonnet-4") || model.contains("claude-sonnet-4") {
-            (
-                SONNET_4_INPUT_PRICE,
-                SONNET_4_OUTPUT_PRICE,
-                SONNET_4_CACHE_WRITE_PRICE,
-                SONNET_4_CACHE_READ_PRICE,
-            )
-        } else {
-            // Return 0 for unknown models to avoid incorrect cost estimations.
-            (0.0, 0.0, 0.0, 0.0)
+    // Split cache creation into its 5m / 1h tiers when the detail is present.
+    let (mut cw_5m, mut cw_1h) = match &usage.cache_creation {
+        Some(c) => (
+            c.ephemeral_5m_input_tokens.unwrap_or(0) as f64,
+            c.ephemeral_1h_input_tokens.unwrap_or(0) as f64,
+        ),
+        None => (0.0, 0.0),
+    };
+    // Fall back to the aggregate, billed at the 5m tier, so nothing is dropped.
+    if (cw_5m + cw_1h) == 0.0 && cache_creation_tokens > 0.0 {
+        cw_5m = cache_creation_tokens;
+        cw_1h = 0.0;
+    }
+
+    (input_tokens * pricing.input
+        + output_tokens * pricing.output
+        + cw_5m * pricing.cache_write_5m
+        + cw_1h * pricing.cache_write_1h
+        + cache_read_tokens * pricing.cache_read)
+        / 1_000_000.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn usage_of(
+        input: u64,
+        output: u64,
+        cw_5m: u64,
+        cw_1h: u64,
+        cache_read: u64,
+    ) -> UsageData {
+        UsageData {
+            input_tokens: Some(input),
+            output_tokens: Some(output),
+            cache_creation_input_tokens: Some(cw_5m + cw_1h),
+            cache_read_input_tokens: Some(cache_read),
+            cache_creation: Some(CacheCreation {
+                ephemeral_5m_input_tokens: Some(cw_5m),
+                ephemeral_1h_input_tokens: Some(cw_1h),
+            }),
+        }
+    }
+
+    #[test]
+    fn opus_5_5_matches_real_log_entry() {
+        // 取自真实 jsonl：input=2047 output=564 cache_creation 5m=49132 1h=0 cache_read=0
+        // 期望 = (2047*2.2 + 564*11 + 49132*2.75) / 1e6 = 0.1458204
+        let u = usage_of(2047, 564, 49_132, 0, 0);
+        let c = calculate_cost("claude-opus-5-5", &u);
+        assert!((c - 0.145_820_4).abs() < 1e-9, "got {c}");
+    }
+
+    #[test]
+    fn opus_5_5_splits_one_hour_cache_tier() {
+        // 1h 档必须按 4.4 而非 2.75 计价
+        let u = usage_of(0, 0, 1_000_000, 1_000_000, 0);
+        let c = calculate_cost("claude-opus-5-5", &u);
+        assert!((c - (2.75 + 4.4)).abs() < 1e-9, "got {c}");
+    }
+
+    #[test]
+    fn opus_5_5_falls_back_when_detail_missing() {
+        // 没有 cache_creation 明细时，总量按 5 分钟档回退，不能漏算
+        let u = UsageData {
+            input_tokens: Some(0),
+            output_tokens: Some(0),
+            cache_creation_input_tokens: Some(1_000_000),
+            cache_read_input_tokens: Some(0),
+            cache_creation: None,
         };
+        let c = calculate_cost("claude-opus-5-5", &u);
+        assert!((c - 2.75).abs() < 1e-9, "got {c}");
+    }
 
-    // Calculate cost (prices are per million tokens)
-    let cost = (input_tokens * input_price / 1_000_000.0)
-        + (output_tokens * output_price / 1_000_000.0)
-        + (cache_creation_tokens * cache_write_price / 1_000_000.0)
-        + (cache_read_tokens * cache_read_price / 1_000_000.0);
+    #[test]
+    fn opus_4_pricing_unchanged() {
+        let u = usage_of(1_000_000, 1_000_000, 1_000_000, 0, 1_000_000);
+        let c = calculate_cost("claude-opus-4-20250514", &u);
+        assert!((c - (15.0 + 75.0 + 18.75 + 1.5)).abs() < 1e-9, "got {c}");
+    }
 
-    cost
+    #[test]
+    fn unknown_model_stays_zero() {
+        let u = usage_of(1_000_000, 1_000_000, 1_000_000, 0, 1_000_000);
+        assert_eq!(calculate_cost("some-other-model", &u), 0.0);
+    }
+
+    #[test]
+    fn current_generation_families_are_all_priced() {
+        // 1M tokens in every bucket, split across the two cache-write tiers.
+        let u = usage_of(1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000);
+        let cases = [
+            ("claude-fable-5-2", 4.4 + 22.0 + 5.5 + 8.8 + 0.11),
+            ("claude-opus-5-5", 2.2 + 11.0 + 2.75 + 4.4 + 0.11),
+            ("claude-sonnet-5-5", 1.1 + 5.5 + 1.375 + 2.2 + 0.055),
+            ("claude-haiku-5-5", 0.055 + 0.275 + 0.06875 + 0.11 + 0.0055),
+        ];
+        for (model, expected) in cases {
+            let c = calculate_cost(model, &u);
+            assert!((c - expected).abs() < 1e-9, "{model}: got {c}, want {expected}");
+        }
+    }
+
+    #[test]
+    fn legacy_aliases_still_resolve_to_a_price() {
+        // Old rows may store bare aliases; they must not silently become free.
+        let u = usage_of(1_000_000, 0, 0, 0, 0);
+        assert!(calculate_cost("claude-opus-4-20250514", &u) > 0.0);
+        assert!(calculate_cost("claude-sonnet-4-20250514", &u) > 0.0);
+    }
 }
 
 fn parse_jsonl_file(

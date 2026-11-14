@@ -94,7 +94,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
   const [forkSessionName, setForkSessionName] = useState("");
   
   // Queued prompts state
-  const [queuedPrompts, setQueuedPrompts] = useState<Array<{ id: string; prompt: string; model: "sonnet" | "opus" }>>([]);
+  const [queuedPrompts, setQueuedPrompts] = useState<Array<{ id: string; prompt: string; model: string; thinkingTokens?: number }>>([]);
   
   // New state for preview feature
   const [showPreview, setShowPreview] = useState(false);
@@ -110,7 +110,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
   const unlistenRefs = useRef<UnlistenFn[]>([]);
   const hasActiveSessionRef = useRef(false);
   const floatingPromptRef = useRef<FloatingPromptInputRef>(null);
-  const queuedPromptsRef = useRef<Array<{ id: string; prompt: string; model: "sonnet" | "opus" }>>([]);
+  const queuedPromptsRef = useRef<Array<{ id: string; prompt: string; model: string; thinkingTokens?: number }>>([]);
   const isMountedRef = useRef(true);
   const isListeningRef = useRef(false);
   const sessionStartTime = useRef<number>(Date.now());
@@ -456,7 +456,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
 
   // Project path selection handled by parent tab controls
 
-  const handleSendPrompt = async (prompt: string, model: "sonnet" | "opus") => {
+  const handleSendPrompt = async (prompt: string, model: string, thinkingTokens?: number) => {
     console.log('[ClaudeCodeSession] handleSendPrompt called with:', { prompt, model, projectPath, claudeSessionId, effectiveSession });
     
     if (!projectPath) {
@@ -469,7 +469,8 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
       const newPrompt = {
         id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         prompt,
-        model
+        model,
+        thinkingTokens
       };
       setQueuedPrompts(prev => [...prev, newPrompt]);
       return;
@@ -773,7 +774,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
             
             // Small delay to ensure UI updates
             setTimeout(() => {
-              handleSendPrompt(nextPrompt.prompt, nextPrompt.model);
+              handleSendPrompt(nextPrompt.prompt, nextPrompt.model, nextPrompt.thinkingTokens);
             }, 100);
           }
         };
@@ -856,13 +857,13 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
           console.log('[ClaudeCodeSession] Resuming session:', effectiveSession.id);
           trackEvent.sessionResumed(effectiveSession.id);
           trackEvent.modelSelected(model);
-          await api.resumeClaudeCode(projectPath, effectiveSession.id, prompt, model);
+          await api.resumeClaudeCode(projectPath, effectiveSession.id, prompt, model, thinkingTokens);
         } else {
           console.log('[ClaudeCodeSession] Starting new session');
           setIsFirstPrompt(false);
           trackEvent.sessionCreated(model, 'prompt_input');
           trackEvent.modelSelected(model);
-          await api.executeClaudeCode(projectPath, prompt, model);
+          await api.executeClaudeCode(projectPath, prompt, model, thinkingTokens);
         }
       }
     } catch (err) {
