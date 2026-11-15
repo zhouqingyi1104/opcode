@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import {
   ChevronRight,
   Folder,
@@ -270,7 +270,7 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
     <>
     <aside
       className={cn(
-        "flex h-full w-[264px] shrink-0 flex-col border-r border-border bg-muted/20",
+        "flex h-full w-[264px] min-h-0 shrink-0 flex-col overflow-hidden border-r border-border bg-muted/20",
         className
       )}
     >
@@ -321,7 +321,7 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
       )}
 
       {/* Tree */}
-      <div className="flex-1 overflow-y-auto px-1 pb-2">
+      <div className="scrollbar-thin h-0 min-h-0 flex-1 overflow-y-auto overscroll-contain px-1 pb-6">
         {loadingProjects && projects.length === 0 && (
           <div className="flex items-center justify-center py-6">
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -396,15 +396,13 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
                 </button>
               </div>
 
-              <AnimatePresence initial={false}>
-                {isExpanded && (
-                  <motion.div
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: "auto", opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.15 }}
-                    className="overflow-hidden pl-6"
-                  >
+              {/* Sessions are rendered without a height animation on purpose:
+                  animating height:"auto" leaves an explicit pixel height behind
+                  if the animation is interrupted (hovering a row changes layout),
+                  and the overflow-hidden wrapper then clips the tail of the list
+                  so the outer scroller can never reach it. */}
+              {isExpanded && (
+                <div className="pl-6">
                     {isLoadingSessions && (
                       <div className="flex items-center gap-2 px-2 py-1.5">
                         <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
@@ -474,9 +472,8 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
                         </div>
                       );
                     })}
-                  </motion.div>
-                )}
-              </AnimatePresence>
+                </div>
+              )}
             </div>
           );
         })}
