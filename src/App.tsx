@@ -23,6 +23,7 @@ import { Toast, ToastContainer } from "@/components/ui/toast";
 import { ProjectSettings } from '@/components/ProjectSettings';
 import { TabManager } from "@/components/TabManager";
 import { TabContent } from "@/components/TabContent";
+import { WorkspaceSidebar } from "@/components/WorkspaceSidebar";
 import { useTabState } from "@/hooks/useTabState";
 import { useAppLifecycle, useTrackEvent } from "@/hooks";
 import { StartupIntro } from "@/components/StartupIntro";
@@ -338,10 +339,13 @@ function AppContent() {
       
       case "tabs":
         return (
-          <div className="h-full flex flex-col">
-            <TabManager className="flex-shrink-0" />
-            <div className="flex-1 overflow-hidden">
-              <TabContent />
+          <div className="h-full flex">
+            <WorkspaceSidebar />
+            <div className="flex-1 min-w-0 flex flex-col">
+              <TabManager className="flex-shrink-0" />
+              <div className="flex-1 overflow-hidden">
+                <TabContent />
+              </div>
             </div>
           </div>
         );
