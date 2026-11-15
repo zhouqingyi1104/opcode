@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
+import { getLiveSlashCommands, subscribeLiveSlashCommands, isCoreCommand } from "@/lib/slashCommandRegistry";
+
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -19,6 +21,23 @@ import {
 import type { SlashCommand } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useTrackEvent, useFeatureAdoptionTracking } from "@/hooks";
+
+/** Build a picker entry from a command name reported by the CLI at init. */
+const toLiveCommand = (name: string): SlashCommand => ({
+  id: `live-${name}`,
+  name,
+  full_command: `/${name}`,
+  scope: "cli",
+  namespace: undefined,
+  file_path: "",
+  content: "",
+  description: isCoreCommand(name) ? "Claude Code command" : "Skill / plugin command",
+  allowed_tools: [],
+  has_bash_commands: false,
+  has_file_references: false,
+  accepts_arguments: false,
+});
+
 
 interface SlashCommandPickerProps {
   /**
@@ -86,6 +105,14 @@ export const SlashCommandPicker: React.FC<SlashCommandPickerProps> = ({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState(initialQuery);
   const [activeTab, setActiveTab] = useState<string>("custom");
+  // Commands reported by the CLI itself (native + skills + plugin commands).
+  const [liveCommands, setLiveCommands] = useState<string[]>(getLiveSlashCommands());
+
+  useEffect(() => {
+    return subscribeLiveSlashCommands(() => {
+      setLiveCommands(getLiveSlashCommands());
+    });
+  }, []);
   
   const commandListRef = useRef<HTMLDivElement>(null);
   
@@ -100,7 +127,7 @@ export const SlashCommandPicker: React.FC<SlashCommandPickerProps> = ({
   
   // Filter commands based on search query and active tab
   useEffect(() => {
-    if (!commands.length) {
+    if (!commands.length && !liveCommands.length) {
       setFilteredCommands([]);
       return;
     }
@@ -110,8 +137,19 @@ export const SlashCommandPicker: React.FC<SlashCommandPickerProps> = ({
     
     // Filter by active tab
     if (activeTab === "default") {
-      // Show default/built-in commands
-      filteredByTab = commands.filter(cmd => cmd.scope === "default");
+      // Prefer the real command set the CLI reported at init. Keep any
+      // backend-only defaults the CLI did not mention.
+      const builtins = commands.filter(cmd => cmd.scope === "default");
+      if (liveCommands.length > 0) {
+        const live = liveCommands.map(toLiveCommand);
+        const liveNames = new Set(liveCommands.map((n) => `/${n}`));
+        filteredByTab = [
+          ...live,
+          ...builtins.filter((cmd) => !liveNames.has(cmd.full_command)),
+        ];
+      } else {
+        filteredByTab = builtins;
+      }
     } else {
       // Show all custom commands (both user and project)
       filteredByTab = commands.filter(cmd => cmd.scope !== "default");
@@ -161,7 +199,7 @@ export const SlashCommandPicker: React.FC<SlashCommandPickerProps> = ({
     
     // Reset selected index when filtered list changes
     setSelectedIndex(0);
-  }, [searchQuery, commands, activeTab]);
+  }, [searchQuery, commands, activeTab, liveCommands]);
   
   // Keyboard navigation
   useEffect(() => {

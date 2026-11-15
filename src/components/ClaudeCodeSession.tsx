@@ -16,6 +16,7 @@ import { Popover } from "@/components/ui/popover";
 import { api, type Session } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { listen, type UnlistenFn } from "@/lib/tauriEvents";
+import { setLiveSlashCommands } from "@/lib/slashCommandRegistry";
 import { StreamMessage } from "./StreamMessage";
 import { FloatingPromptInput, type FloatingPromptInputRef } from "./FloatingPromptInput";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -111,6 +112,8 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
   const hasActiveSessionRef = useRef(false);
   const floatingPromptRef = useRef<FloatingPromptInputRef>(null);
   const queuedPromptsRef = useRef<Array<{ id: string; prompt: string; model: string; effort?: string }>>([]);
+  // Handle for the long-lived claude process backing this tab (stream-json mode)
+  const persistentKeyRef = useRef<string | null>(null);
   const isMountedRef = useRef(true);
   const isListeningRef = useRef(false);
   const sessionStartTime = useRef<number>(Date.now());
@@ -455,6 +458,51 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
   };
 
   // Project path selection handled by parent tab controls
+
+  /**
+   * Starts (or reuses) the long-lived claude process backing this tab.
+   * Resuming an existing conversation is decided once, at start time.
+   */
+  const ensurePersistentSession = async (model: string, effort?: string): Promise<string> => {
+    if (persistentKeyRef.current) {
+      return persistentKeyRef.current;
+    }
+    if (!projectPath) {
+      throw new Error("No project selected");
+    }
+
+    const resumeId = claudeSessionId || effectiveSession?.id || undefined;
+    const key = await api.startPersistentSession(projectPath, model, effort, resumeId);
+    persistentKeyRef.current = key;
+    console.log('[ClaudeCodeSession] Persistent session started:', key, 'resume:', resumeId);
+    return key;
+  };
+
+  // Feed the slash-command registry with whatever the CLI reports at init, and
+  // tear down the long-lived process when this tab goes away.
+  useEffect(() => {
+    let unlistenInit: UnlistenFn | undefined;
+
+    listen('claude-init', (event: { payload?: { slash_commands?: string[] } }) => {
+      const names = event.payload?.slash_commands;
+      if (Array.isArray(names) && names.length > 0) {
+        setLiveSlashCommands(names);
+      }
+    }).then((fn) => {
+      unlistenInit = fn;
+    });
+
+    return () => {
+      unlistenInit?.();
+      const key = persistentKeyRef.current;
+      if (key) {
+        persistentKeyRef.current = null;
+        void api.stopPersistentSession(key).catch((err) =>
+          console.warn('[ClaudeCodeSession] Failed to stop persistent session:', err)
+        );
+      }
+    };
+  }, []);
 
   const handleSendPrompt = async (prompt: string, model: string, effort?: string) => {
     console.log('[ClaudeCodeSession] handleSendPrompt called with:', { prompt, model, projectPath, claudeSessionId, effectiveSession });
@@ -852,18 +900,37 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
           session_age_ms: sessionAge
         });
 
-        // Execute the appropriate command
-        if (effectiveSession && !isFirstPrompt) {
-          console.log('[ClaudeCodeSession] Resuming session:', effectiveSession.id);
-          trackEvent.sessionResumed(effectiveSession.id);
-          trackEvent.modelSelected(model);
-          await api.resumeClaudeCode(projectPath, effectiveSession.id, prompt, model, effort);
-        } else {
-          console.log('[ClaudeCodeSession] Starting new session');
+        // Send through the long-lived session so stateful slash commands
+        // (/clear, /compact, /model) actually work. Falls back to the legacy
+        // one-shot path below if the persistent session cannot be started.
+        trackEvent.modelSelected(model);
+        let sent = false;
+        try {
+          const key = await ensurePersistentSession(model, effort);
+          await api.sendPersistentMessage(key, prompt);
+          sent = true;
+        } catch (persistErr) {
+          console.warn(
+            '[ClaudeCodeSession] Persistent session unavailable, falling back:',
+            persistErr
+          );
+          persistentKeyRef.current = null;
+        }
+
+        if (!sent) {
+          if (effectiveSession && !isFirstPrompt) {
+            console.log('[ClaudeCodeSession] Resuming session:', effectiveSession.id);
+            trackEvent.sessionResumed(effectiveSession.id);
+            await api.resumeClaudeCode(projectPath, effectiveSession.id, prompt, model, effort);
+          } else {
+            console.log('[ClaudeCodeSession] Starting new session');
+            setIsFirstPrompt(false);
+            trackEvent.sessionCreated(model, 'prompt_input');
+            await api.executeClaudeCode(projectPath, prompt, model, effort);
+          }
+        } else if (isFirstPrompt) {
           setIsFirstPrompt(false);
           trackEvent.sessionCreated(model, 'prompt_input');
-          trackEvent.modelSelected(model);
-          await api.executeClaudeCode(projectPath, prompt, model, effort);
         }
       }
     } catch (err) {

@@ -130,7 +130,7 @@ pub struct FileEntry {
 
 /// Finds the full path to the claude binary
 /// This is necessary because macOS apps have a limited PATH environment
-fn find_claude_binary(app_handle: &AppHandle) -> Result<String, String> {
+pub(crate) fn find_claude_binary(app_handle: &AppHandle) -> Result<String, String> {
     crate::claude_binary::find_claude_binary(app_handle)
 }
 
@@ -537,7 +537,7 @@ fn extract_first_user_message(jsonl_path: &PathBuf) -> (Option<String>, Option<S
 
 /// Helper function to create a tokio Command with proper environment variables
 /// This ensures commands like Claude can find Node.js and other dependencies
-fn create_command_with_env(program: &str) -> Command {
+pub(crate) fn create_command_with_env(program: &str) -> Command {
     // Convert std::process::Command to tokio::process::Command
     let _std_cmd = crate::claude_binary::create_command_with_env(program);
 
@@ -1658,7 +1658,7 @@ pub async fn get_claude_session_output(
 ///
 /// A non-existent directory makes the spawn fail with an opaque OS error, so
 /// check up front and return a message that names the offending path.
-fn validate_project_dir(project_path: &str) -> Result<(), String> {
+pub(crate) fn validate_project_dir(project_path: &str) -> Result<(), String> {
     if project_path.trim().is_empty() {
         return Err("Project path is empty".to_string());
     }

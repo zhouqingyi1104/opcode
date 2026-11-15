@@ -17,6 +17,10 @@ use commands::agents::{
     list_running_sessions, load_agent_session_history, set_claude_binary_path,
     stream_session_output, update_agent, AgentDb,
 };
+use commands::persistent::{
+    send_persistent_message, start_persistent_session, stop_persistent_session,
+    PersistentSessions,
+};
 use commands::claude::{
     cancel_claude_execution, check_auto_checkpoint, check_claude_version, cleanup_old_checkpoints,
     clear_checkpoint_manager, continue_claude_code, create_checkpoint, create_project,
@@ -147,6 +151,7 @@ fn main() {
 
             // Initialize Claude process state
             app.manage(ClaudeProcessState::default());
+            app.manage(PersistentSessions::default());
 
             // Apply window vibrancy with rounded corners on macOS
             #[cfg(target_os = "macos")]
@@ -188,6 +193,9 @@ fn main() {
             // Claude & Project Management
             list_projects,
             delete_session,
+            start_persistent_session,
+            send_persistent_message,
+            stop_persistent_session,
             create_project,
             get_project_sessions,
             get_home_directory,

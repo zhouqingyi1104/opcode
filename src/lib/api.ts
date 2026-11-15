@@ -465,6 +465,38 @@ export const api = {
    * Lists all projects in the ~/.claude/projects directory
    * @returns Promise resolving to an array of projects
    */
+  /**
+   * Starts a long-lived Claude process that speaks the streaming protocol.
+   * Returns a handle used by sendPersistentMessage / stopPersistentSession.
+   */
+  async startPersistentSession(
+    projectPath: string,
+    model: string,
+    effort?: string,
+    resumeSessionId?: string
+  ): Promise<string> {
+    return apiCall<string>("start_persistent_session", {
+      projectPath,
+      model,
+      effort,
+      resumeSessionId,
+    });
+  },
+
+  /**
+   * Sends one user turn (text or a slash command) to a live session.
+   */
+  async sendPersistentMessage(key: string, text: string): Promise<void> {
+    return apiCall("send_persistent_message", { key, text });
+  },
+
+  /**
+   * Kills the long-lived process behind a session.
+   */
+  async stopPersistentSession(key: string): Promise<void> {
+    return apiCall("stop_persistent_session", { key });
+  },
+
   async listProjects(): Promise<Project[]> {
     try {
       return await apiCall<Project[]>("list_projects");
