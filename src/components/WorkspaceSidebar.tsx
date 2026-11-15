@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
   ChevronRight,
@@ -10,6 +10,7 @@ import {
   Plus,
   Loader2,
   Trash2,
+  Pencil,
   AlertTriangle,
 } from "lucide-react";
 import { api, type Project, type Session } from "@/lib/api";
@@ -49,6 +50,12 @@ function relativeTime(timestampMs: number): string {
 }
 
 function sessionLabel(session: Session): string {
+  // A name the user gave the session always wins over its opening line.
+  const named = session.custom_title?.replace(/\s+/g, " ").trim();
+  if (named) {
+    return named.length > 42 ? `${named.slice(0, 42)}…` : named;
+  }
+
   const first = session.first_message?.replace(/\s+/g, " ").trim();
   if (first) {
     return first.length > 42 ? `${first.slice(0, 42)}…` : first;
@@ -99,6 +106,12 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  /** Session currently being renamed inline, plus its draft title. */
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  /** Guards against saving twice when Enter is followed by blur. */
+  const renameCommittingRef = useRef<string | null>(null);
+  const [renameError, setRenameError] = useState<string | null>(null);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeSessionId = activeTab?.sessionId;
@@ -255,6 +268,57 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
     }
   }, [closeTab, findTabBySessionId, pendingDelete, tabs]);
 
+  // Rename failures are transient: show the reason, then get out of the way.
+  useEffect(() => {
+    if (!renameError) return;
+    const timer = window.setTimeout(() => setRenameError(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [renameError]);
+
+  const startRename = useCallback((session: Session) => {    setRenameError(null);
+    setRenamingId(session.id);
+    // Seed with the untruncated source, never with the "..." preview.
+    setRenameDraft(session.custom_title ?? session.first_message ?? "");
+  }, []);
+
+  const commitRename = useCallback(
+    async (projectId: string, session: Session) => {
+      // Enter triggers a save, which unmounts the input and fires blur; this
+      // guard keeps the second call from writing the same title again.
+      if (renameCommittingRef.current === session.id) return;
+      renameCommittingRef.current = session.id;
+
+      const title = renameDraft.trim();
+      const previous = session.custom_title ?? "";
+      setRenamingId(null);
+
+      if (title === previous) {
+        renameCommittingRef.current = null;
+        return;
+      }
+
+      const apply = (value: string | undefined) =>
+        setSessionsByProject((prev) => ({
+          ...prev,
+          [projectId]: (prev[projectId] ?? []).map((s) =>
+            s.id === session.id ? { ...s, custom_title: value } : s
+          ),
+        }));
+
+      apply(title || undefined); // optimistic
+      try {
+        await api.renameSession(session.id, title);
+      } catch (err) {
+        const detail = typeof err === "string" ? err : err instanceof Error ? err.message : "";
+        setRenameError(detail || "重命名失败");
+        apply(previous || undefined);
+      } finally {
+        renameCommittingRef.current = null;
+      }
+    },
+    [renameDraft]
+  );
+
   const filtered = useMemo(() => {    const q = query.trim().toLowerCase();
     if (!q) return projects;
 
@@ -317,6 +381,12 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
             placeholder="搜索项目或会话"
             className="w-full rounded border border-border bg-background px-2 py-1 text-caption outline-none focus:border-primary/60"
           />
+        </div>
+      )}
+
+      {renameError && (
+        <div className="mx-2 mb-1 rounded bg-destructive/10 px-2 py-1 text-caption text-destructive">
+          {renameError}
         </div>
       )}
 
@@ -429,6 +499,36 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
 
                     {sessions.map((session) => {
                       const isActive = session.id === activeSessionId;
+
+                      if (renamingId === session.id) {
+                        return (
+                          <div
+                            key={session.id}
+                            className="flex w-full items-center gap-1.5 rounded bg-accent/60 px-2 py-1"
+                          >
+                            <MessageSquare className="h-3 w-3 shrink-0 text-primary" />
+                            <input
+                              autoFocus
+                              value={renameDraft}
+                              onChange={(event) => setRenameDraft(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.preventDefault();
+                                  void commitRename(project.id, session);
+                                } else if (event.key === "Escape") {
+                                  event.preventDefault();
+                                  setRenamingId(null);
+                                }
+                              }}
+                              onBlur={() => void commitRename(project.id, session)}
+                              placeholder="留空则恢复默认标题"
+                              maxLength={120}
+                              className="min-w-0 flex-1 rounded border border-primary/60 bg-background px-1 py-0.5 text-caption outline-none"
+                            />
+                          </div>
+                        );
+                      }
+
                       return (
                         <div
                           key={session.id}
@@ -454,6 +554,18 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
                             <span className="shrink-0 text-caption text-muted-foreground group-hover/session:hidden">
                               {relativeTime(sessionTime(session))}
                             </span>
+                          </button>
+                          <button
+                            type="button"
+                            title="重命名该会话"
+                            aria-label="重命名该会话"
+                            onClick={() => startRename(session)}
+                            className={cn(
+                              "hidden shrink-0 rounded p-1 transition-colors group-hover/session:block",
+                              "text-muted-foreground hover:bg-accent hover:text-foreground"
+                            )}
+                          >
+                            <Pencil className="h-3 w-3" />
                           </button>
                           <button
                             type="button"

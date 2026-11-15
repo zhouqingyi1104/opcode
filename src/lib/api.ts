@@ -67,6 +67,8 @@ export interface Session {
   created_at: number;
   /** First user message content (if available) */
   first_message?: string;
+  /** User-assigned title (from /rename or the sidebar); wins over first_message */
+  custom_title?: string;
   /** Timestamp of the first user message (if available) */
   message_timestamp?: string;
 }
@@ -553,6 +555,17 @@ export const api = {
       console.error("Failed to delete project:", error);
       throw error;
     }
+  },
+
+  /**
+   * Sets a session's display title.
+   *
+   * Stored as a `custom-title` record appended to the transcript, which is the
+   * same place Claude Code's /rename writes - so both sides stay in sync. An
+   * empty title clears the override and falls back to the first message.
+   */
+  async renameSession(sessionId: string, title: string): Promise<void> {
+    return apiCall<void>("rename_session", { sessionId, title });
   },
 
   /**

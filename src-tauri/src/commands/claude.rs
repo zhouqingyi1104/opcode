@@ -53,6 +53,10 @@ pub struct Session {
     pub created_at: u64,
     /// First user message content (if available)
     pub first_message: Option<String>,
+    /// User-assigned title from a `custom-title` record (set by /rename or the
+    /// workspace sidebar). Takes precedence over `first_message`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_title: Option<String>,
     /// Timestamp of the first user message (if available)
     pub message_timestamp: Option<String>,
 }
@@ -535,6 +539,61 @@ fn extract_first_user_message(jsonl_path: &PathBuf) -> (Option<String>, Option<S
     (None, None)
 }
 
+/// Reads the most recent `custom-title` record from the tail of a session log.
+///
+/// Renames are appended to the transcript (this is what Claude Code's own
+/// /rename writes), so only the tail can contain the current title. Reading the
+/// whole file would mean scanning tens of megabytes per session in the sidebar.
+fn extract_custom_title(jsonl_path: &PathBuf) -> Option<String> {
+    const TAIL_BYTES: u64 = 64 * 1024;
+
+    let mut file = fs::File::open(jsonl_path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(TAIL_BYTES);
+    if start > 0 {
+        use std::io::Seek;
+        file.seek(std::io::SeekFrom::Start(start)).ok()?;
+    }
+
+    let mut raw = Vec::new();
+    {
+        use std::io::Read;
+        file.read_to_end(&mut raw).ok()?;
+    }
+    // Starting mid-file can split a multi-byte character; lossy is fine here
+    // because only complete JSON lines at the end matter.
+    let text = String::from_utf8_lossy(&raw);
+
+    let mut lines: Vec<&str> = text.lines().collect();
+    if start > 0 && !lines.is_empty() {
+        // First line is probably truncated - drop it.
+        lines.remove(0);
+    }
+
+    let mut found: Option<String> = None;
+    for line in lines {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value.get("type").and_then(|t| t.as_str()) != Some("custom-title") {
+            continue;
+        }
+        if let Some(title) = value.get("customTitle").and_then(|t| t.as_str()) {
+            let title = title.trim();
+            // The *last* record wins, including an empty one: that is how a
+            // cleared title falls back to the first user message instead of
+            // resurfacing an older rename.
+            found = if title.is_empty() {
+                None
+            } else {
+                Some(title.to_string())
+            };
+        }
+    }
+
+    found
+}
+
 /// Helper function to create a tokio Command with proper environment variables
 /// This ensures commands like Claude can find Node.js and other dependencies
 pub(crate) fn create_command_with_env(program: &str) -> Command {
@@ -683,6 +742,64 @@ pub async fn list_projects() -> Result<Vec<Project>, String> {
         .map_err(|e| format!("Failed to list projects: {}", e))?
 }
 
+/// Sets (or clears) a session's display title.
+///
+/// The title is stored the same way Claude Code stores it: a `custom-title`
+/// record appended to the transcript. That keeps opcode and the CLI in sync -
+/// renaming here shows up in `claude --resume`, and vice versa. Appending is
+/// also why this never has to rewrite a multi-megabyte file.
+#[tauri::command]
+pub async fn rename_session(session_id: String, title: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let projects_root = get_claude_dir()
+            .map_err(|e| e.to_string())?
+            .join("projects");
+        if !projects_root.exists() {
+            return Err("Claude projects directory not found".to_string());
+        }
+        rename_session_in(&projects_root, &session_id, &title)
+    })
+    .await
+    .map_err(|e| format!("Failed to rename session: {}", e))?
+}
+
+/// Appends a `custom-title` record. An empty title clears the override, which
+/// makes the sidebar fall back to the first user message again.
+fn rename_session_in(projects_root: &Path, session_id: &str, title: &str) -> Result<(), String> {
+    let title = title.trim();
+
+    // One record per line: an embedded newline would corrupt the transcript.
+    if title.contains('\n') || title.contains('\r') {
+        return Err("Title must be a single line".to_string());
+    }
+    let length = title.chars().count();
+    if length > 120 {
+        return Err(format!("Title is too long ({} characters, max 120)", length));
+    }
+
+    let path = find_session_file(projects_root, session_id)?;
+
+    let record = serde_json::json!({
+        "type": "custom-title",
+        "customTitle": title,
+        "sessionId": session_id,
+    });
+    let mut line = serde_json::to_string(&record)
+        .map_err(|e| format!("Failed to encode title: {}", e))?;
+    line.push('\n');
+
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("Failed to open session log: {}", e))?;
+    file.write_all(line.as_bytes())
+        .map_err(|e| format!("Failed to write title: {}", e))?;
+
+    log::info!("Renamed session {} to {:?}", session_id, title);
+    Ok(())
+}
+
 /// Permanently deletes a session log file from `~/.claude/projects`.
 ///
 /// This is a hard delete: the conversation history is gone, and so are its
@@ -700,18 +817,15 @@ fn delete_session_blocking(session_id: &str) -> Result<(), String> {
         .join("projects");
 
     if !projects_root.exists() {
-        return Err("Claude projects directory not found".to_string());
-    }
+        return Err("Claude projects directory not found".to_string());}
 
     delete_session_in(&projects_root, session_id)?;
     Ok(())
 }
 
-/// Deletes `<session_id>.jsonl` under `projects_root` and returns the removed path.
-///
-/// Split out from the command so the guards can be unit tested against a
-/// temporary directory instead of the real `~/.claude`.
-fn delete_session_in(projects_root: &Path, session_id: &str) -> Result<PathBuf, String> {
+/// Locates `<session_id>.jsonl` under `projects_root`, refusing any id that
+/// could escape the directory.
+fn find_session_file(projects_root: &Path, session_id: &str) -> Result<PathBuf, String> {
     // Session ids are UUIDs. Reject anything path-like before touching the fs.
     if session_id.is_empty()
         || session_id.contains('/')
@@ -734,14 +848,22 @@ fn delete_session_in(projects_root: &Path, session_id: &str) -> Result<PathBuf, 
         .map(|entry| entry.path().to_path_buf())
         .ok_or_else(|| format!("Session not found: {}", session_id))?;
 
-    // Defence in depth: never delete outside the projects directory.
-    let canonical_root = projects_root
-        .canonicalize()
-        .map_err(|e| e.to_string())?;
+    // Defence in depth: never touch a file outside the projects directory.
+    let canonical_root = projects_root.canonicalize().map_err(|e| e.to_string())?;
     let canonical_target = target.canonicalize().map_err(|e| e.to_string())?;
     if !canonical_target.starts_with(&canonical_root) {
-        return Err("Refusing to delete a file outside the projects directory".to_string());
+        return Err("Refusing to modify a file outside the projects directory".to_string());
     }
+
+    Ok(canonical_target)
+}
+
+/// Deletes `<session_id>.jsonl` under `projects_root` and returns the removed path.
+///
+/// Split out from the command so the guards can be unit tested against a
+/// temporary directory instead of the real `~/.claude`.
+fn delete_session_in(projects_root: &Path, session_id: &str) -> Result<PathBuf, String> {
+    let canonical_target = find_session_file(projects_root, session_id)?;
 
     fs::remove_file(&canonical_target).map_err(|e| format!("Failed to delete session: {}", e))?;
     log::info!("Deleted session file: {:?}", canonical_target);
@@ -1078,6 +1200,9 @@ fn get_project_sessions_blocking(project_id: String) -> Result<Vec<Session>, Str
 
                 // Extract first user message and timestamp
                 let (first_message, message_timestamp) = extract_first_user_message(&path);
+                // A user-assigned title (written by /rename or by the sidebar)
+                // always wins over the first message.
+                let custom_title = extract_custom_title(&path);
 
                 // Try to load associated todo data
                 let todo_path = todos_dir.join(format!("{}.json", session_id));
@@ -1096,6 +1221,7 @@ fn get_project_sessions_blocking(project_id: String) -> Result<Vec<Session>, Str
                     todo_data,
                     created_at,
                     first_message,
+                    custom_title,
                     message_timestamp,
                 });
             }
@@ -3433,5 +3559,110 @@ mod delete_project_tests {
 
         let removed = delete_project_in(tmp.path(), "D--Mixed").unwrap();
         assert_eq!(removed, 1);
+    }
+}
+
+#[cfg(test)]
+mod rename_session_tests {
+    use super::{extract_custom_title, rename_session_in};
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn make_session(root: &std::path::Path, project: &str, id: &str) -> std::path::PathBuf {
+        let dir = root.join(project);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(format!("{}.jsonl", id));
+        fs::write(
+            &file,
+            b"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hello\"}}\n",
+        )
+        .unwrap();
+        file
+    }
+
+    #[test]
+    fn writes_a_title_the_reader_can_see() {
+        let tmp = TempDir::new().unwrap();
+        let file = make_session(tmp.path(), "proj-a", "sess-1");
+
+        assert!(extract_custom_title(&file).is_none());
+        rename_session_in(tmp.path(), "sess-1", "  发布计划  ").unwrap();
+        assert_eq!(extract_custom_title(&file).as_deref(), Some("发布计划"));
+    }
+
+    #[test]
+    fn latest_title_wins() {
+        let tmp = TempDir::new().unwrap();
+        let file = make_session(tmp.path(), "proj-a", "sess-1");
+
+        rename_session_in(tmp.path(), "sess-1", "first").unwrap();
+        rename_session_in(tmp.path(), "sess-1", "second").unwrap();
+
+        assert_eq!(extract_custom_title(&file).as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn appends_instead_of_rewriting_the_transcript() {
+        let tmp = TempDir::new().unwrap();
+        let file = make_session(tmp.path(), "proj-a", "sess-1");
+        let before = fs::read_to_string(&file).unwrap();
+
+        rename_session_in(tmp.path(), "sess-1", "keep history").unwrap();
+
+        let after = fs::read_to_string(&file).unwrap();
+        assert!(after.starts_with(&before), "existing lines must survive");
+        assert_eq!(after.lines().count(), before.lines().count() + 1);
+    }
+
+    #[test]
+    fn empty_title_clears_the_override() {
+        let tmp = TempDir::new().unwrap();
+        let file = make_session(tmp.path(), "proj-a", "sess-1");
+
+        rename_session_in(tmp.path(), "sess-1", "temporary").unwrap();
+        rename_session_in(tmp.path(), "sess-1", "   ").unwrap();
+
+        assert!(extract_custom_title(&file).is_none(), "cleared title falls back");
+    }
+
+    #[test]
+    fn rejects_multiline_and_overlong_titles() {
+        let tmp = TempDir::new().unwrap();
+        make_session(tmp.path(), "proj-a", "sess-1");
+
+        let err = rename_session_in(tmp.path(), "sess-1", "two\nlines").unwrap_err();
+        assert!(err.contains("single line"), "{}", err);
+
+        let long = "x".repeat(121);
+        let err = rename_session_in(tmp.path(), "sess-1", &long).unwrap_err();
+        assert!(err.contains("too long"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_path_like_ids() {
+        let tmp = TempDir::new().unwrap();
+        make_session(tmp.path(), "proj-a", "sess-1");
+
+        for bad in ["../sess-1", "a/sess-1", "a\\sess-1", ""] {
+            assert!(rename_session_in(tmp.path(), bad, "x").is_err(), "{}", bad);
+        }
+    }
+
+    #[test]
+    fn finds_a_title_written_far_from_the_head() {
+        // The reader only looks at the tail, so make sure a rename appended
+        // after a large transcript is still picked up.
+        let tmp = TempDir::new().unwrap();
+        let file = make_session(tmp.path(), "proj-a", "sess-1");
+        {
+            use std::io::Write;
+            let mut f = fs::OpenOptions::new().append(true).open(&file).unwrap();
+            for i in 0..4000 {
+                writeln!(f, "{{\"type\":\"user\",\"i\":{}}}", i).unwrap();
+            }
+        }
+
+        rename_session_in(tmp.path(), "sess-1", "deep title").unwrap();
+        assert_eq!(extract_custom_title(&file).as_deref(), Some("deep title"));
     }
 }

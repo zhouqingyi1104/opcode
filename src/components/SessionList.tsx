@@ -168,10 +168,13 @@ export const SessionList: React.FC<SessionListProps> = ({
                       )}
                     </div>
                     
-                    {/* First message preview */}
-                    {session.first_message ? (
+                    {/* Title: a user-assigned name wins over the first message */}
+                    {session.custom_title || session.first_message ? (
                       <p className="text-caption text-muted-foreground line-clamp-2 mb-2">
-                        {truncateText(getFirstLine(session.first_message), 120)}
+                        {truncateText(
+                          getFirstLine((session.custom_title || session.first_message)!),
+                          120
+                        )}
                       </p>
                     ) : (
                       <p className="text-caption text-muted-foreground/60 italic mb-2">
