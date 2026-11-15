@@ -77,6 +77,7 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
   const [sessionsByProject, setSessionsByProject] = useState<Record<string, Session[]>>({});
   const [loadingProjects, setLoadingProjects] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState<Record<string, boolean>>({});
+  const [sessionErrors, setSessionErrors] = useState<Record<string, string>>({});
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
 
@@ -109,13 +110,23 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
 
   const loadSessions = useCallback(async (project: Project) => {
     setLoadingSessions((prev) => ({ ...prev, [project.id]: true }));
+    setSessionErrors((prev) => {
+      const next = { ...prev };
+      delete next[project.id];
+      return next;
+    });
     try {
       const sessions = await api.getProjectSessions(project.id);
       const sorted = [...sessions].sort((a, b) => sessionTime(b) - sessionTime(a));
       setSessionsByProject((prev) => ({ ...prev, [project.id]: sorted }));
     } catch (err) {
       console.error("[WorkspaceSidebar] Failed to load sessions:", err);
-      setSessionsByProject((prev) => ({ ...prev, [project.id]: [] }));
+      // Leave the list unset so the row offers a retry instead of pretending
+      // the project has no conversations.
+      setSessionErrors((prev) => ({
+        ...prev,
+        [project.id]: typeof err === "string" ? err : "加载失败",
+      }));
     } finally {
       setLoadingSessions((prev) => ({ ...prev, [project.id]: false }));
     }
@@ -123,20 +134,26 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
 
   const toggleProject = useCallback(
     (project: Project) => {
+      const willExpand = !expanded.has(project.id);
+
       setExpanded((prev) => {
         const next = new Set(prev);
         if (next.has(project.id)) {
           next.delete(project.id);
         } else {
           next.add(project.id);
-          if (!sessionsByProject[project.id]) {
-            void loadSessions(project);
-          }
         }
         return next;
       });
+
+      // Side effects must stay out of the updater: a setState call issued from
+      // inside another updater runs during the render phase and React drops it,
+      // which is why sessions used to never arrive.
+      if (willExpand && !sessionsByProject[project.id]) {
+        void loadSessions(project);
+      }
     },
-    [loadSessions, sessionsByProject]
+    [expanded, loadSessions, sessionsByProject]
   );
 
   const openSession = useCallback(
@@ -301,7 +318,20 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
                       </div>
                     )}
 
-                    {!isLoadingSessions && sessions.length === 0 && (
+                    {!isLoadingSessions && sessionErrors[project.id] && (
+                      <div className="px-2 py-1.5">
+                        <p className="text-caption text-destructive">会话加载失败</p>
+                        <button
+                          type="button"
+                          onClick={() => void loadSessions(project)}
+                          className="mt-1 text-caption text-primary underline"
+                        >
+                          重试
+                        </button>
+                      </div>
+                    )}
+
+                    {!isLoadingSessions && !sessionErrors[project.id] && sessions.length === 0 && (
                       <p className="px-2 py-1.5 text-caption text-muted-foreground">暂无会话</p>
                     )}
 
