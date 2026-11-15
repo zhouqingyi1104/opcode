@@ -252,7 +252,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
 
   return (
     <ErrorBoundary>
-      <div className={cn("flex flex-col h-screen bg-background", className)}>
+      <div className={cn("relative flex flex-col h-screen bg-background", className)}>
         {/* Header */}
         <SessionHeader
           projectPath={projectPath}
@@ -330,8 +330,10 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
           </motion.div>
         )}
 
-        {/* Floating prompt input */}
+        {/* Floating prompt input — anchored by the caller now that the input
+            component no longer positions itself against the viewport. */}
         {projectPath && (
+          <div className="absolute inset-x-0 bottom-0 z-40">
           <FloatingPromptInput
             ref={promptInputRef}
             onSend={handleSendPrompt}
@@ -343,6 +345,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
               }
             }}
           />
+          </div>
         )}
 
         {/* Timeline Navigator */}
