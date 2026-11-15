@@ -219,6 +219,12 @@ export const SlashCommandPicker: React.FC<SlashCommandPickerProps> = ({
       // Always load fresh commands from filesystem
       const loadedCommands = await api.slashCommandsList(projectPath);
       setCommands(loadedCommands);
+      // Land on whichever tab actually has content. The picker used to always
+      // open on "Custom", which looks completely empty for anyone who has not
+      // created command files in ~/.claude/commands yet.
+      if (!loadedCommands.some((cmd) => cmd.scope !== "default")) {
+        setActiveTab("default");
+      }
     } catch (err) {
       console.error("Failed to load slash commands:", err);
       setError(err instanceof Error ? err.message : 'Failed to load commands');
