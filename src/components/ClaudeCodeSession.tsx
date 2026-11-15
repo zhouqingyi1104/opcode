@@ -1824,9 +1824,10 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
             >
               <p
                 className="truncate px-2 py-1 text-caption text-muted-foreground"
-                title={fileMenu.target}
+                title={decodeTarget(fileMenu.target)}
               >
-                {fileMenu.target.split(/[\\/]/).pop() || fileMenu.target}
+                {decodeTarget(fileMenu.target).split(/[\\/]/).pop() ||
+                  decodeTarget(fileMenu.target)}
               </p>
               <button
                 type="button"

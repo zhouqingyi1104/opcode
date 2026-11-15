@@ -231,20 +231,50 @@ pub async fn reveal_file_location(path: String, base_dir: Option<String>) -> Res
         .map_err(|e| format!("Reveal task failed: {}", e))?
 }
 
-fn reveal_in_file_manager(path: String, base_dir: Option<String>) -> Result<(), String> {
-    let resolved = preview_target_path(&path, base_dir.as_deref())?;
+/// Opens Explorer with `path` selected, via the Shell API.
+///
+/// `explorer /select,<path>` looks simpler but cannot be made reliable from
+/// Rust: Explorer parses its own command line, while std quotes any argument
+/// that contains spaces or quotes. The result is a mangled argument, and
+/// Explorer silently falls back to opening the default folder.
+#[cfg(target_os = "windows")]
+fn open_and_select(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Com::{
+        CoInitializeEx, CoTaskMemFree, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+    };
+    use windows::Win32::UI::Shell::{ILCreateFromPathW, SHOpenFolderAndSelectItems};
+
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        // The command runs on a Tokio blocking thread without COM initialised.
+        // An already-initialised apartment returns S_FALSE, which is fine.
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+
+        let pidl = ILCreateFromPathW(PCWSTR(wide.as_ptr()));
+        if pidl.is_null() {
+            return Err(format!("Cannot resolve shell item for: {}", path.display()));
+        }
+
+        let result = SHOpenFolderAndSelectItems(pidl, None, 0);
+        CoTaskMemFree(Some(pidl as *const _));
+
+        result.map_err(|e| format!("Failed to open Explorer: {}", e))
+    }
+}
+
+fn reveal_in_file_manager(path: String, base_dir: Option<String>) -> Result<(), String> {    let resolved = preview_target_path(&path, base_dir.as_deref())?;
     let shown = resolved.display().to_string();
 
     #[cfg(target_os = "windows")]
     {
-        // "/select,<path>" opens Explorer with the item highlighted. It has to
-        // travel as a single argument: Explorer does its own quote parsing and
-        // splits on spaces otherwise.
-        let arg = format!("/select,\"{}\"", shown);
-        std::process::Command::new("explorer")
-            .arg(arg)
-            .spawn()
-            .map_err(|e| format!("Failed to open Explorer: {}", e))?;
+        open_and_select(&resolved)?;
     }
 
     #[cfg(target_os = "macos")]

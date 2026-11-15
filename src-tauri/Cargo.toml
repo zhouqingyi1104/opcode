@@ -67,6 +67,17 @@ futures-util = "0.3"
 image = "=0.25.1"
 
 
+[target.'cfg(windows)'.dependencies]
+# Used to open Explorer with a specific file selected. `explorer /select,<path>`
+# is not usable from Rust: Explorer parses its own command line and rejects the
+# quoting std applies to arguments containing quotes or spaces.
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri = { version = "2", features = ["protocol-asset", "macos-private-api"] }
 window-vibrancy = "0.5"
