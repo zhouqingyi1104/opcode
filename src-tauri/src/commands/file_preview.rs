@@ -231,6 +231,37 @@ pub async fn reveal_file_location(path: String, base_dir: Option<String>) -> Res
         .map_err(|e| format!("Reveal task failed: {}", e))?
 }
 
+/// Converts a path into the NUL-terminated UTF-16 form the Shell API expects.
+///
+/// `canonicalize()` returns verbatim paths (`\\?\D:\...`), which `ILCreateFromPathW`
+/// rejects by returning a null item id. The prefix only exists to bypass
+/// MAX_PATH, so it is removed here - including its UNC variant, where
+/// `\\?\UNC\server\share` has to become `\\server\share`.
+#[cfg(target_os = "windows")]
+fn shell_wide_path(path: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+
+    const VERBATIM: &[u16] = &[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+    const UNC: &[u16] = &[b'U' as u16, b'N' as u16, b'C' as u16, b'\\' as u16];
+
+    let raw: Vec<u16> = path.as_os_str().encode_wide().collect();
+    let mut wide: Vec<u16> = if raw.starts_with(VERBATIM) {
+        let rest = &raw[VERBATIM.len()..];
+        if rest.starts_with(UNC) {
+            let mut rebuilt = vec![b'\\' as u16, b'\\' as u16];
+            rebuilt.extend_from_slice(&rest[UNC.len()..]);
+            rebuilt
+        } else {
+            rest.to_vec()
+        }
+    } else {
+        raw
+    };
+
+    wide.push(0);
+    wide
+}
+
 /// Opens Explorer with `path` selected, via the Shell API.
 ///
 /// `explorer /select,<path>` looks simpler but cannot be made reliable from
@@ -239,18 +270,13 @@ pub async fn reveal_file_location(path: String, base_dir: Option<String>) -> Res
 /// Explorer silently falls back to opening the default folder.
 #[cfg(target_os = "windows")]
 fn open_and_select(path: &Path) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::System::Com::{
         CoInitializeEx, CoTaskMemFree, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
     };
     use windows::Win32::UI::Shell::{ILCreateFromPathW, SHOpenFolderAndSelectItems};
 
-    let wide: Vec<u16> = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
+    let wide = shell_wide_path(path);
 
     unsafe {
         // The command runs on a Tokio blocking thread without COM initialised.
@@ -259,7 +285,10 @@ fn open_and_select(path: &Path) -> Result<(), String> {
 
         let pidl = ILCreateFromPathW(PCWSTR(wide.as_ptr()));
         if pidl.is_null() {
-            return Err(format!("Cannot resolve shell item for: {}", path.display()));
+            return Err(format!(
+                "Cannot resolve shell item for: {}",
+                String::from_utf16_lossy(&wide[..wide.len().saturating_sub(1)])
+            ));
         }
 
         let result = SHOpenFolderAndSelectItems(pidl, None, 0);
@@ -536,5 +565,41 @@ mod tests {
         )
         .unwrap_err();
         assert!(!err.is_empty());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn shell_path_drops_the_verbatim_prefix() {
+        use super::shell_wide_path;
+        use std::path::Path;
+
+        // canonicalize() on Windows yields these; the Shell API rejects them.
+        let wide = shell_wide_path(Path::new(r"\\?\D://RedNote//文案.md"));
+        let text = String::from_utf16_lossy(&wide[..wide.len() - 1]);
+        assert_eq!(text, r"D://RedNote//文案.md");
+        assert_eq!(*wide.last().unwrap(), 0, "must stay NUL terminated");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn shell_path_rewrites_unc_verbatim_paths() {
+        use super::shell_wide_path;
+        use std::path::Path;
+
+        // \\?\UNC\server\share -> \\server\share
+        let wide = shell_wide_path(Path::new(r"\\?\UNC\server\share\file.md"));
+        let text = String::from_utf16_lossy(&wide[..wide.len() - 1]);
+        assert_eq!(text, r"\\server\share\file.md");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn shell_path_leaves_plain_paths_alone() {
+        use super::shell_wide_path;
+        use std::path::Path;
+
+        let wide = shell_wide_path(Path::new(r"D://RedNote//文案.md"));
+        let text = String::from_utf16_lossy(&wide[..wide.len() - 1]);
+        assert_eq!(text, r"D://RedNote//文案.md");
     }
 }
