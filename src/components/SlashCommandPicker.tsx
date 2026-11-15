@@ -600,6 +600,11 @@ export const SlashCommandPicker: React.FC<SlashCommandPickerProps> = ({
 
       {/* Footer */}
       <div className="border-t border-border p-2">
+        {liveCommands.length === 0 && (
+          <p className="text-xs text-muted-foreground text-center pb-1">
+            Send one message in this tab to load the CLI&apos;s full command list
+          </p>
+        )}
         <p className="text-xs text-muted-foreground text-center">
           ↑↓ Navigate • Enter Select • Esc Close
         </p>
