@@ -13,9 +13,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover } from "@/components/ui/popover";
-import { api, type Session } from "@/lib/api";
+import { api, type Session, type FilePreview } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { listen, type UnlistenFn } from "@/lib/tauriEvents";
+import { FilePreviewPanel } from "./FilePreviewPanel";
 import { setLiveSlashCommands } from "@/lib/slashCommandRegistry";
 import { StreamMessage } from "./StreamMessage";
 import { FloatingPromptInput, type FloatingPromptInputRef } from "./FloatingPromptInput";
@@ -100,6 +101,11 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
   // New state for preview feature
   const [showPreview, setShowPreview] = useState(false);
   const [previewUrl, setPreviewUrl] = useState("");
+  // File preview opened by clicking a local path in a message
+  const [filePreviewTarget, setFilePreviewTarget] = useState<string | null>(null);
+  const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
+  const [isFilePreviewLoading, setIsFilePreviewLoading] = useState(false);
+  const [filePreviewError, setFilePreviewError] = useState<string | null>(null);
   const [showPreviewPrompt, setShowPreviewPrompt] = useState(false);
   const [splitPosition, setSplitPosition] = useState(50);
   const [isPreviewMaximized, setIsPreviewMaximized] = useState(false);
@@ -1203,6 +1209,40 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
     }
   };
 
+  /**
+   * Opens a file referenced by a message link in the right-hand panel.
+   * Relative targets are resolved against the session's project directory.
+   */
+  const handleFileOpen = async (target: string) => {
+    // Markdown hrefs are URL-encoded; file paths on disk are not.
+    let path = target;
+    try {
+      path = decodeURIComponent(target);
+    } catch {
+      // leave as-is when the target is not valid percent-encoding
+    }
+
+    setFilePreviewTarget(path);
+    setFilePreview(null);
+    setFilePreviewError(null);
+    setIsFilePreviewLoading(true);
+    try {
+      const preview = await api.readFilePreview(path, projectPath ?? undefined);
+      setFilePreview(preview);
+    } catch (err) {
+      const detail = typeof err === "string" ? err : err instanceof Error ? err.message : "";
+      setFilePreviewError(detail || "Failed to load file");
+    } finally {
+      setIsFilePreviewLoading(false);
+    }
+  };
+
+  const handleCloseFilePreview = () => {
+    setFilePreviewTarget(null);
+    setFilePreview(null);
+    setFilePreviewError(null);
+  };
+
   const handleClosePreview = () => {
     setShowPreview(false);
     setIsPreviewMaximized(false);
@@ -1313,6 +1353,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
                   message={message} 
                   streamMessages={messages}
                   onLinkDetected={handleLinkDetected}
+                  onFileOpen={handleFileOpen}
                 />
               </motion.div>
             );
@@ -1382,7 +1423,30 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
           "flex-1 overflow-hidden transition-all duration-300",
           showTimeline && "sm:mr-96"
         )}>
-          {showPreview ? (
+          {filePreviewTarget ? (
+            <SplitPane
+              left={
+                <div className="h-full flex flex-col">
+                  {projectPathInput}
+                  {messagesList}
+                </div>
+              }
+              right={
+                <FilePreviewPanel
+                  target={filePreviewTarget}
+                  preview={filePreview}
+                  isLoading={isFilePreviewLoading}
+                  error={filePreviewError}
+                  onClose={handleCloseFilePreview}
+                />
+              }
+              initialSplit={splitPosition}
+              onSplitChange={setSplitPosition}
+              minLeftWidth={400}
+              minRightWidth={320}
+              className="h-full"
+            />
+          ) : showPreview ? (
             // Split pane layout when preview is active
             <SplitPane
               left={

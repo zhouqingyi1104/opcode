@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod claude;
+pub mod file_preview;
 pub mod mcp;
 pub mod persistent;
 pub mod proxy;

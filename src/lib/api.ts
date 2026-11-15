@@ -20,8 +20,26 @@ export interface ProcessInfo {
 /**
  * Represents a project in the ~/.claude/projects directory
  */
-export interface Project {
-  /** The project ID (derived from the directory name) */
+/**
+ * Result of previewing a file referenced by a message link.
+ */
+export interface FilePreview {
+  /** Absolute path that was read */
+  path: string;
+  /** File name for the panel header */
+  display_name: string;
+  /** text | image | video | audio | binary */
+  kind: string;
+  size: number;
+  /** True when the file exceeded the preview budget */
+  truncated: boolean;
+  /** Present for text files */
+  text?: string;
+  /** data: URL, present for image / video / audio */
+  data_url?: string;
+}
+
+export interface Project {  /** The project ID (derived from the directory name) */
   id: string;
   /** The original project path (decoded from the directory name) */
   path: string;
@@ -504,6 +522,14 @@ export const api = {
       console.error("Failed to list projects:", error);
       throw error;
     }
+  },
+
+  /**
+   * Reads a file for the preview panel. Relative paths are resolved against
+   * `baseDir`; paths escaping the project are rejected by the backend.
+   */
+  async readFilePreview(path: string, baseDir?: string): Promise<FilePreview> {
+    return apiCall<FilePreview>("read_file_preview", { path, baseDir });
   },
 
   /**

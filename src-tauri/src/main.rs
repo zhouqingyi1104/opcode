@@ -18,6 +18,7 @@ use commands::agents::{
     list_running_sessions, load_agent_session_history, set_claude_binary_path,
     stream_session_output, update_agent, AgentDb,
 };
+use commands::file_preview::read_file_preview;
 use commands::persistent::{
     send_persistent_message, start_persistent_session, stop_persistent_session,
     PersistentSessions,
@@ -195,6 +196,7 @@ fn main() {
             list_projects,
             delete_session,
             delete_project,
+            read_file_preview,
             start_persistent_session,
             send_persistent_message,
             stop_persistent_session,

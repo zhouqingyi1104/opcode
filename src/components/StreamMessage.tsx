@@ -46,18 +46,54 @@ interface StreamMessageProps {
   className?: string;
   streamMessages: ClaudeStreamMessage[];
   onLinkDetected?: (url: string) => void;
+  /**
+   * Called when a link in the message points at a local file, so the parent can
+   * open it in a preview panel.
+   */
+  onFileOpen?: (target: string) => void;
 }
 
 /**
  * Component to render a single Claude Code stream message
  */
-const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, className, streamMessages, onLinkDetected }) => {
+const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, className, streamMessages, onLinkDetected, onFileOpen }) => {
   // State to track tool results mapped by tool call ID
   const [toolResults, setToolResults] = useState<Map<string, any>>(new Map());
   
   // Get current theme
   const { theme } = useTheme();
   const syntaxTheme = getClaudeSyntaxTheme(theme);
+
+  /**
+   * Renders a markdown link. Local (non-http) targets are routed to the preview
+   * panel instead of navigating the webview.
+   */
+  const renderLink = ({ href, children, ...rest }: any) => {
+    const isExternal = !href || /^(https?:|mailto:|#)/i.test(href);
+
+    if (isExternal || !onFileOpen) {
+      return (
+        <a href={href} target="_blank" rel="noreferrer" {...rest}>
+          {children}
+        </a>
+      );
+    }
+
+    return (
+      <a
+        href={href}
+        className="cursor-pointer underline decoration-dotted hover:text-primary"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onFileOpen(href);
+        }}
+        {...rest}
+      >
+        {children}
+      </a>
+    );
+  };
   
   // Extract all tool results from stream messages
   useEffect(() => {
@@ -148,7 +184,8 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
                                   {children}
                                 </code>
                               );
-                            }
+                            },
+                            a: renderLink,
                           }}
                         >
                           {textContent}
@@ -677,7 +714,8 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
                               {children}
                             </code>
                           );
-                        }
+                        },
+                        a: renderLink,
                       }}
                     >
                       {message.result}
