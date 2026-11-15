@@ -3,11 +3,19 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useTabState } from '@/hooks/useTabState';
 import { useScreenTracking } from '@/hooks/useAnalytics';
 import { Tab } from '@/contexts/TabContext';
-import { Loader2, Plus, ArrowLeft } from 'lucide-react';
+import { Loader2, Plus, ArrowLeft, AlertTriangle } from 'lucide-react';
 import { api, type Project, type Session, type ClaudeMdFile } from '@/lib/api';
 import { ProjectList } from '@/components/ProjectList';
 import { SessionList } from '@/components/SessionList';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 
 // Lazy load heavy components
 const ClaudeCodeSession = lazy(() => import('@/components/ClaudeCodeSession').then(m => ({ default: m.ClaudeCodeSession })));
@@ -34,6 +42,8 @@ const TabPanel: React.FC<TabPanelProps> = ({ tab, isActive }) => {
   const [selectedProject, setSelectedProject] = React.useState<Project | null>(null);
   const [sessions, setSessions] = React.useState<Session[]>([]);
   const [loading, setLoading] = React.useState(false);
+  const [sessionToDelete, setSessionToDelete] = React.useState<Session | null>(null);
+  const [isDeleting, setIsDeleting] = React.useState(false);
   
   // Track screen when tab becomes active
   useScreenTracking(isActive ? tab.type : undefined, isActive ? tab.id : undefined);
@@ -78,6 +88,24 @@ const TabPanel: React.FC<TabPanelProps> = ({ tab, isActive }) => {
       setError("Failed to load sessions for this project.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const confirmDeleteSession = async () => {
+    if (!sessionToDelete) return;
+    const target = sessionToDelete;
+    try {
+      setIsDeleting(true);
+      await api.deleteSession(target.id);
+      setSessions((prev) => prev.filter((s) => s.id !== target.id));
+      // Session counts on the project list are stale now; refresh quietly.
+      void loadProjects();
+    } catch (err) {
+      console.error("Failed to delete session:", err);
+      setError("Failed to delete session. The file may be in use.");
+    } finally {
+      setIsDeleting(false);
+      setSessionToDelete(null);
     }
   };
 
@@ -229,8 +257,62 @@ const TabPanel: React.FC<TabPanelProps> = ({ tab, isActive }) => {
                             detail: { file } 
                           }));
                         }}
+                        onDeleteSession={(session) => setSessionToDelete(session)}
                       />
                     )}
+
+                    {/* Delete confirmation */}
+                    <Dialog
+                      open={!!sessionToDelete}
+                      onOpenChange={(open) => {
+                        if (!open && !isDeleting) setSessionToDelete(null);
+                      }}
+                    >
+                      <DialogContent className="max-w-md">
+                        <DialogHeader>
+                          <div className="flex items-center gap-3">
+                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-destructive/10">
+                              <AlertTriangle className="h-4 w-4 text-destructive" />
+                            </div>
+                            <DialogTitle>Delete this session?</DialogTitle>
+                          </div>
+                          <DialogDescription className="pt-2">
+                            The conversation log for{" "}
+                            <span className="font-medium text-foreground">
+                              {sessionToDelete?.id.slice(0, 8)}
+                            </span>{" "}
+                            will be permanently deleted from disk. This cannot be undone.
+                          </DialogDescription>
+                        </DialogHeader>
+                        <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
+                          Its usage and cost records will disappear too — the Usage
+                          dashboard reads these same log files.
+                        </div>
+                        <DialogFooter>
+                          <Button
+                            variant="outline"
+                            onClick={() => setSessionToDelete(null)}
+                            disabled={isDeleting}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            variant="destructive"
+                            onClick={confirmDeleteSession}
+                            disabled={isDeleting}
+                          >
+                            {isDeleting ? (
+                              <>
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                Deleting…
+                              </>
+                            ) : (
+                              "Delete permanently"
+                            )}
+                          </Button>
+                        </DialogFooter>
+                      </DialogContent>
+                    </Dialog>
                   </div>
                 </div>
               ) : (

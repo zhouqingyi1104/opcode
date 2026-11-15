@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Clock, MessageSquare } from "lucide-react";
+import { Clock, MessageSquare, Trash2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Pagination } from "@/components/ui/pagination";
 import { ClaudeMemoriesDropdown } from "@/components/ClaudeMemoriesDropdown";
@@ -31,6 +31,11 @@ interface SessionListProps {
    */
   onEditClaudeFile?: (file: ClaudeMdFile) => void;
   /**
+   * Callback when a session should be deleted. The parent owns confirmation
+   * and the actual API call.
+   */
+  onDeleteSession?: (session: Session) => void;
+  /**
    * Optional className for styling
    */
   className?: string;
@@ -54,6 +59,7 @@ export const SessionList: React.FC<SessionListProps> = ({
   projectPath,
   onSessionClick,
   onEditClaudeFile,
+  onDeleteSession,
   className,
 }) => {
   const [currentPage, setCurrentPage] = useState(1);
@@ -141,6 +147,24 @@ export const SessionList: React.FC<SessionListProps> = ({
                         <span className="inline-flex items-center px-1.5 py-0.5 rounded text-caption font-medium bg-primary/10 text-primary">
                           Todo
                         </span>
+                      )}
+                      {onDeleteSession && (
+                        <button
+                          type="button"
+                          title="Delete session"
+                          aria-label="Delete session"
+                          className={cn(
+                            "shrink-0 p-1 rounded transition-all",
+                            "opacity-0 group-hover:opacity-100 focus:opacity-100",
+                            "text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                          )}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onDeleteSession(session);
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
                       )}
                     </div>
                     

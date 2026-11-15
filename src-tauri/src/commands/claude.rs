@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -674,6 +674,132 @@ pub async fn list_projects() -> Result<Vec<Project>, String> {
     tokio::task::spawn_blocking(list_projects_blocking)
         .await
         .map_err(|e| format!("Failed to list projects: {}", e))?
+}
+
+/// Permanently deletes a session log file from `~/.claude/projects`.
+///
+/// This is a hard delete: the conversation history is gone, and so are its
+/// usage records, because the usage dashboard reads the very same .jsonl files.
+#[tauri::command]
+pub async fn delete_session(session_id: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || delete_session_blocking(&session_id))
+        .await
+        .map_err(|e| format!("Failed to delete session: {}", e))?
+}
+
+fn delete_session_blocking(session_id: &str) -> Result<(), String> {
+    let projects_root = get_claude_dir()
+        .map_err(|e| e.to_string())?
+        .join("projects");
+
+    if !projects_root.exists() {
+        return Err("Claude projects directory not found".to_string());
+    }
+
+    delete_session_in(&projects_root, session_id)?;
+    Ok(())
+}
+
+/// Deletes `<session_id>.jsonl` under `projects_root` and returns the removed path.
+///
+/// Split out from the command so the guards can be unit tested against a
+/// temporary directory instead of the real `~/.claude`.
+fn delete_session_in(projects_root: &Path, session_id: &str) -> Result<PathBuf, String> {
+    // Session ids are UUIDs. Reject anything path-like before touching the fs.
+    if session_id.is_empty()
+        || session_id.contains('/')
+        || session_id.contains('\\')
+        || session_id.contains("..")
+    {
+        return Err("Invalid session id".to_string());
+    }
+
+    // Locate by file stem instead of rebuilding the encoded project folder name,
+    // so this keeps working regardless of how the path was encoded.
+    let target = walkdir::WalkDir::new(projects_root)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .find(|entry| {
+            entry.path().is_file()
+                && entry.path().extension().and_then(|s| s.to_str()) == Some("jsonl")
+                && entry.path().file_stem().and_then(|s| s.to_str()) == Some(session_id)
+        })
+        .map(|entry| entry.path().to_path_buf())
+        .ok_or_else(|| format!("Session not found: {}", session_id))?;
+
+    // Defence in depth: never delete outside the projects directory.
+    let canonical_root = projects_root
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let canonical_target = target.canonicalize().map_err(|e| e.to_string())?;
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err("Refusing to delete a file outside the projects directory".to_string());
+    }
+
+    fs::remove_file(&canonical_target).map_err(|e| format!("Failed to delete session: {}", e))?;
+    log::info!("Deleted session file: {:?}", canonical_target);
+    Ok(canonical_target)
+}
+
+#[cfg(test)]
+mod delete_session_tests {
+    use super::delete_session_in;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn make_session(root: &std::path::Path, project: &str, id: &str) -> std::path::PathBuf {
+        let dir = root.join(project);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(format!("{}.jsonl", id));
+        fs::write(&file, b"{\"timestamp\":\"2026-01-01T00:00:00Z\"}\n").unwrap();
+        file
+    }
+
+    #[test]
+    fn deletes_the_matching_log() {
+        let tmp = TempDir::new().unwrap();
+        let file = make_session(tmp.path(), "proj-a", "abc-123");
+        let other = make_session(tmp.path(), "proj-b", "keep-me");
+
+        let removed = delete_session_in(tmp.path(), "abc-123").unwrap();
+
+        assert!(!file.exists(), "target should be gone");
+        assert!(removed.exists() == false);
+        assert!(other.exists(), "unrelated session must survive");
+    }
+
+    #[test]
+    fn rejects_path_traversal_ids() {
+        let tmp = TempDir::new().unwrap();
+        make_session(tmp.path(), "proj", "real");
+
+        for bad in ["../real", "proj/real", "proj\\real", "..", ""] {
+            let err = delete_session_in(tmp.path(), bad).unwrap_err();
+            assert!(err.contains("Invalid session id"), "{} -> {}", bad, err);
+        }
+    }
+
+    #[test]
+    fn errors_when_session_is_missing() {
+        let tmp = TempDir::new().unwrap();
+        make_session(tmp.path(), "proj", "exists");
+
+        let err = delete_session_in(tmp.path(), "does-not-exist").unwrap_err();
+        assert!(err.contains("Session not found"), "{}", err);
+    }
+
+    #[test]
+    fn does_not_touch_non_jsonl_files() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("proj");
+        fs::create_dir_all(&dir).unwrap();
+        let txt = dir.join("abc-123.txt");
+        fs::write(&txt, b"not a session").unwrap();
+
+        let err = delete_session_in(tmp.path(), "abc-123").unwrap_err();
+        assert!(err.contains("Session not found"), "{}", err);
+        assert!(txt.exists());
+    }
 }
 
 fn list_projects_blocking() -> Result<Vec<Project>, String> {

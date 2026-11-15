@@ -475,6 +475,21 @@ export const api = {
   },
 
   /**
+   * Permanently deletes a session log file.
+   *
+   * This also removes the session's usage records, since the usage dashboard
+   * reads the same .jsonl files.
+   */
+  async deleteSession(sessionId: string): Promise<void> {
+    try {
+      return await apiCall<void>("delete_session", { sessionId });
+    } catch (error) {
+      console.error("Failed to delete session:", error);
+      throw error;
+    }
+  },
+
+  /**
    * Creates a new project for the given directory path
    * @param path - The directory path to create a project for
    * @returns Promise resolving to the created project
