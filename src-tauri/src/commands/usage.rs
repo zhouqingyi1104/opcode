@@ -4,6 +4,7 @@ use serde_json;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use tauri::command;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -155,6 +156,8 @@ struct JsonlEntry {
     request_id: Option<String>,
     #[serde(rename = "costUSD")]
     cost_usd: Option<f64>,
+    /// Present on most lines; used to recover the real project path.
+    cwd: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -302,6 +305,30 @@ mod tests {
         assert!(calculate_cost("claude-opus-4-20250514", &u) > 0.0);
         assert!(calculate_cost("claude-sonnet-4-20250514", &u) > 0.0);
     }
+
+    /// Manual benchmark against the real ~/.claude corpus.
+    /// Run with: cargo test --lib bench_usage -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn bench_usage_scan() {
+        let claude = dirs::home_dir().expect("home dir").join(".claude");
+
+        let cold = std::time::Instant::now();
+        let entries = get_all_usage_entries(&claude);
+        let cold_elapsed = cold.elapsed();
+
+        let warm = std::time::Instant::now();
+        let cached = get_all_usage_entries(&claude);
+        let warm_elapsed = warm.elapsed();
+
+        println!(
+            "[bench] entries={} cold={:?} warm={:?} cache_hit={}",
+            entries.len(),
+            cold_elapsed,
+            warm_elapsed,
+            cached.len() == entries.len()
+        );
+    }
 }
 
 fn parse_jsonl_file(
@@ -326,66 +353,66 @@ fn parse_jsonl_file(
                 continue;
             }
 
-            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(line) {
+            // Single parse per line. Previously this line was parsed twice
+            // (once into a Value for `cwd`, then into JsonlEntry), which
+            // doubled the cost on multi-hundred-MB log files.
+            if let Ok(entry) = serde_json::from_str::<JsonlEntry>(line) {
                 // Extract the actual project path from cwd if we haven't already
                 if actual_project_path.is_none() {
-                    if let Some(cwd) = json_value.get("cwd").and_then(|v| v.as_str()) {
-                        actual_project_path = Some(cwd.to_string());
+                    if let Some(cwd) = entry.cwd.as_ref() {
+                        actual_project_path = Some(cwd.clone());
                     }
                 }
 
-                // Try to parse as JsonlEntry for usage data
-                if let Ok(entry) = serde_json::from_value::<JsonlEntry>(json_value) {
-                    if let Some(message) = &entry.message {
-                        // Deduplication based on message ID and request ID
-                        if let (Some(msg_id), Some(req_id)) = (&message.id, &entry.request_id) {
-                            let unique_hash = format!("{}:{}", msg_id, req_id);
-                            if processed_hashes.contains(&unique_hash) {
-                                continue; // Skip duplicate entry
-                            }
-                            processed_hashes.insert(unique_hash);
+                if let Some(message) = &entry.message {
+                    // Deduplication based on message ID and request ID
+                    if let (Some(msg_id), Some(req_id)) = (&message.id, &entry.request_id) {
+                        let unique_hash = format!("{}:{}", msg_id, req_id);
+                        if processed_hashes.contains(&unique_hash) {
+                            continue; // Skip duplicate entry
+                        }
+                        processed_hashes.insert(unique_hash);
+                    }
+
+                    if let Some(usage) = &message.usage {
+                        // Skip entries without meaningful token usage
+                        if usage.input_tokens.unwrap_or(0) == 0
+                            && usage.output_tokens.unwrap_or(0) == 0
+                            && usage.cache_creation_input_tokens.unwrap_or(0) == 0
+                            && usage.cache_read_input_tokens.unwrap_or(0) == 0
+                        {
+                            continue;
                         }
 
-                        if let Some(usage) = &message.usage {
-                            // Skip entries without meaningful token usage
-                            if usage.input_tokens.unwrap_or(0) == 0
-                                && usage.output_tokens.unwrap_or(0) == 0
-                                && usage.cache_creation_input_tokens.unwrap_or(0) == 0
-                                && usage.cache_read_input_tokens.unwrap_or(0) == 0
-                            {
-                                continue;
+                        let cost = entry.cost_usd.unwrap_or_else(|| {
+                            if let Some(model_str) = &message.model {
+                                calculate_cost(model_str, usage)
+                            } else {
+                                0.0
                             }
+                        });
 
-                            let cost = entry.cost_usd.unwrap_or_else(|| {
-                                if let Some(model_str) = &message.model {
-                                    calculate_cost(model_str, usage)
-                                } else {
-                                    0.0
-                                }
-                            });
+                        // Use actual project path if found, otherwise use encoded name
+                        let project_path = actual_project_path
+                            .clone()
+                            .unwrap_or_else(|| encoded_project_name.to_string());
 
-                            // Use actual project path if found, otherwise use encoded name
-                            let project_path = actual_project_path
+                        entries.push(UsageEntry {
+                            timestamp: entry.timestamp,
+                            model: message
+                                .model
                                 .clone()
-                                .unwrap_or_else(|| encoded_project_name.to_string());
-
-                            entries.push(UsageEntry {
-                                timestamp: entry.timestamp,
-                                model: message
-                                    .model
-                                    .clone()
-                                    .unwrap_or_else(|| "unknown".to_string()),
-                                input_tokens: usage.input_tokens.unwrap_or(0),
-                                output_tokens: usage.output_tokens.unwrap_or(0),
-                                cache_creation_tokens: usage
-                                    .cache_creation_input_tokens
-                                    .unwrap_or(0),
-                                cache_read_tokens: usage.cache_read_input_tokens.unwrap_or(0),
-                                cost,
-                                session_id: entry.session_id.unwrap_or_else(|| session_id.clone()),
-                                project_path,
-                            });
-                        }
+                                .unwrap_or_else(|| "unknown".to_string()),
+                            input_tokens: usage.input_tokens.unwrap_or(0),
+                            output_tokens: usage.output_tokens.unwrap_or(0),
+                            cache_creation_tokens: usage
+                                .cache_creation_input_tokens
+                                .unwrap_or(0),
+                            cache_read_tokens: usage.cache_read_input_tokens.unwrap_or(0),
+                            cost,
+                            session_id: entry.session_id.unwrap_or_else(|| session_id.clone()),
+                            project_path,
+                        });
                     }
                 }
             }
@@ -395,30 +422,31 @@ fn parse_jsonl_file(
     entries
 }
 
-fn get_earliest_timestamp(path: &PathBuf) -> Option<String> {
-    if let Ok(content) = fs::read_to_string(path) {
-        let mut earliest_timestamp: Option<String> = None;
-        for line in content.lines() {
-            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(line) {
-                if let Some(timestamp_str) = json_value.get("timestamp").and_then(|v| v.as_str()) {
-                    if let Some(current_earliest) = &earliest_timestamp {
-                        if timestamp_str < current_earliest.as_str() {
-                            earliest_timestamp = Some(timestamp_str.to_string());
-                        }
-                    } else {
-                        earliest_timestamp = Some(timestamp_str.to_string());
-                    }
+/// Fingerprint of the corpus: file count, total bytes, newest mtime.
+/// Metadata-only (no file reads), so it is cheap enough to run on every call
+/// and precise enough to notice that nothing changed since the last scan.
+fn corpus_fingerprint(files: &[(PathBuf, String)]) -> (usize, u64, u128) {
+    let mut total_bytes: u64 = 0;
+    let mut newest_mtime: u128 = 0;
+    for (path, _) in files {
+        if let Ok(meta) = fs::metadata(path) {
+            total_bytes += meta.len();
+            if let Ok(modified) = meta.modified() {
+                if let Ok(since_epoch) = modified.duration_since(std::time::UNIX_EPOCH) {
+                    newest_mtime = newest_mtime.max(since_epoch.as_nanos());
                 }
             }
         }
-        return earliest_timestamp;
     }
-    None
+    (files.len(), total_bytes, newest_mtime)
 }
 
+/// Whole-corpus cache. Re-opening the Usage tab used to re-parse every log
+/// file from scratch; with this, an unchanged corpus returns in milliseconds.
+static USAGE_ENTRY_CACHE: OnceLock<Mutex<Option<((usize, u64, u128), Vec<UsageEntry>)>>> =
+    OnceLock::new();
+
 fn get_all_usage_entries(claude_path: &PathBuf) -> Vec<UsageEntry> {
-    let mut all_entries = Vec::new();
-    let mut processed_hashes = HashSet::new();
     let projects_dir = claude_path.join("projects");
 
     let mut files_to_process: Vec<(PathBuf, String)> = Vec::new();
@@ -440,10 +468,25 @@ fn get_all_usage_entries(claude_path: &PathBuf) -> Vec<UsageEntry> {
         }
     }
 
-    // Sort files by their earliest timestamp to ensure chronological processing
-    // and deterministic deduplication.
-    files_to_process.sort_by_cached_key(|(path, _)| get_earliest_timestamp(path));
+    let fingerprint = corpus_fingerprint(&files_to_process);
+    let cache = USAGE_ENTRY_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((cached_fingerprint, cached_entries)) = guard.as_ref() {
+            if *cached_fingerprint == fingerprint {
+                return cached_entries.clone();
+            }
+        }
+    }
 
+    // Sort by file mtime rather than parsing every file once just to read its
+    // earliest timestamp. Sessions only ever get appended to, so mtime order
+    // matches session order closely enough for deterministic deduplication,
+    // and this removes a full extra pass over the corpus.
+    files_to_process
+        .sort_by_cached_key(|(path, _)| fs::metadata(path).and_then(|m| m.modified()).ok());
+
+    let mut all_entries = Vec::new();
+    let mut processed_hashes = HashSet::new();
     for (path, project_name) in files_to_process {
         let entries = parse_jsonl_file(&path, &project_name, &mut processed_hashes);
         all_entries.extend(entries);
@@ -452,11 +495,21 @@ fn get_all_usage_entries(claude_path: &PathBuf) -> Vec<UsageEntry> {
     // Sort by timestamp
     all_entries.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
 
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((fingerprint, all_entries.clone()));
+    }
+
     all_entries
 }
 
 #[command]
-pub fn get_usage_stats(days: Option<u32>) -> Result<UsageStats, String> {
+pub async fn get_usage_stats(days: Option<u32>) -> Result<UsageStats, String> {
+    tokio::task::spawn_blocking(move || get_usage_stats_blocking(days))
+        .await
+        .map_err(|e| format!("Usage scan failed: {}", e))?
+}
+
+fn get_usage_stats_blocking(days: Option<u32>) -> Result<UsageStats, String> {
     let claude_path = dirs::home_dir()
         .ok_or("Failed to get home directory")?
         .join(".claude");
@@ -616,7 +669,19 @@ pub fn get_usage_stats(days: Option<u32>) -> Result<UsageStats, String> {
 }
 
 #[command]
-pub fn get_usage_by_date_range(start_date: String, end_date: String) -> Result<UsageStats, String> {
+pub async fn get_usage_by_date_range(
+    start_date: String,
+    end_date: String,
+) -> Result<UsageStats, String> {
+    tokio::task::spawn_blocking(move || get_usage_by_date_range_blocking(start_date, end_date))
+        .await
+        .map_err(|e| format!("Usage scan failed: {}", e))?
+}
+
+fn get_usage_by_date_range_blocking(
+    start_date: String,
+    end_date: String,
+) -> Result<UsageStats, String> {
     let claude_path = dirs::home_dir()
         .ok_or("Failed to get home directory")?
         .join(".claude");
@@ -786,7 +851,16 @@ pub fn get_usage_by_date_range(start_date: String, end_date: String) -> Result<U
 }
 
 #[command]
-pub fn get_usage_details(
+pub async fn get_usage_details(
+    project_path: Option<String>,
+    date: Option<String>,
+) -> Result<Vec<UsageEntry>, String> {
+    tokio::task::spawn_blocking(move || get_usage_details_blocking(project_path, date))
+        .await
+        .map_err(|e| format!("Usage scan failed: {}", e))?
+}
+
+fn get_usage_details_blocking(
     project_path: Option<String>,
     date: Option<String>,
 ) -> Result<Vec<UsageEntry>, String> {
@@ -810,7 +884,17 @@ pub fn get_usage_details(
 }
 
 #[command]
-pub fn get_session_stats(
+pub async fn get_session_stats(
+    since: Option<String>,
+    until: Option<String>,
+    order: Option<String>,
+) -> Result<Vec<ProjectUsage>, String> {
+    tokio::task::spawn_blocking(move || get_session_stats_blocking(since, until, order))
+        .await
+        .map_err(|e| format!("Usage scan failed: {}", e))?
+}
+
+fn get_session_stats_blocking(
     since: Option<String>,
     until: Option<String>,
     order: Option<String>,
