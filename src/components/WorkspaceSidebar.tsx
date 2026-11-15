@@ -9,10 +9,25 @@ import {
   RefreshCw,
   Plus,
   Loader2,
+  Trash2,
+  AlertTriangle,
 } from "lucide-react";
 import { api, type Project, type Session } from "@/lib/api";
 import { useTabState } from "@/hooks/useTabState";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+
+type PendingDelete =
+  | { kind: "project"; project: Project; sessionCount: number }
+  | { kind: "session"; project: Project; session: Session };
 
 interface WorkspaceSidebarProps {
   className?: string;
@@ -70,6 +85,7 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
     switchToTab,
     findTabBySessionId,
     canAddTab,
+    closeTab,
   } = useTabState();
 
   const [projects, setProjects] = useState<Project[]>([]);
@@ -80,6 +96,9 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
   const [sessionErrors, setSessionErrors] = useState<Record<string, string>>({});
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeSessionId = activeTab?.sessionId;
@@ -183,8 +202,60 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
     [activeTabId, canAddTab, createChatTab, findTabBySessionId, switchToTab, updateTab]
   );
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
+  const confirmDelete = useCallback(async () => {
+    if (!pendingDelete) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+
+    try {
+      if (pendingDelete.kind === "project") {
+        const projectId = pendingDelete.project.id;
+        await api.deleteProject(projectId);
+
+        setProjects((prev) => prev.filter((p) => p.id !== projectId));
+        setExpanded((prev) => {
+          const next = new Set(prev);
+          next.delete(projectId);
+          return next;
+        });
+        setSessionsByProject((prev) => {
+          const next = { ...prev };
+          delete next[projectId];
+          return next;
+        });
+
+        // Chat tabs pointed at that history no longer have anything to show.
+        for (const tab of tabs) {
+          if (tab.type === "chat" && tab.initialProjectPath === pendingDelete.project.path) {
+            void closeTab(tab.id, true);
+          }
+        }
+      } else {
+        const sessionId = pendingDelete.session.id;
+        const projectId = pendingDelete.project.id;
+        await api.deleteSession(sessionId);
+
+        setSessionsByProject((prev) => ({
+          ...prev,
+          [projectId]: (prev[projectId] ?? []).filter((s) => s.id !== sessionId),
+        }));
+
+        const openTab = findTabBySessionId(sessionId);
+        if (openTab) {
+          void closeTab(openTab.id, true);
+        }
+      }
+
+      setPendingDelete(null);
+    } catch (err) {
+      const detail = typeof err === "string" ? err : err instanceof Error ? err.message : "";
+      setDeleteError(detail || "删除失败");
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [closeTab, findTabBySessionId, pendingDelete, tabs]);
+
+  const filtered = useMemo(() => {    const q = query.trim().toLowerCase();
     if (!q) return projects;
 
     return projects.filter((project) => {
@@ -196,6 +267,7 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
   }, [projects, query, sessionsByProject]);
 
   return (
+    <>
     <aside
       className={cn(
         "flex h-full w-[264px] shrink-0 flex-col border-r border-border bg-muted/20",
@@ -272,35 +344,57 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
               activeProjectPath.replace(/\\/g, "/") === project.path.replace(/\\/g, "/"));
 
           return (
-            <div key={project.id}>
-              <button
-                type="button"
-                onClick={() => toggleProject(project)}
+            <div key={project.id} className="group/project">
+              <div
                 className={cn(
-                  "flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left transition-colors",
+                  "flex w-full items-center gap-0.5 rounded transition-colors",
                   "hover:bg-accent/60",
                   isProjectActive && !isExpanded && "bg-accent/40"
                 )}
               >
-                <motion.span
-                  animate={{ rotate: isExpanded ? 90 : 0 }}
-                  transition={{ duration: 0.15 }}
-                  className="text-muted-foreground"
+                <button
+                  type="button"
+                  onClick={() => toggleProject(project)}
+                  className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left"
                 >
-                  <ChevronRight className="h-3 w-3" />
-                </motion.span>
-                {isExpanded ? (
-                  <FolderOpen className="h-3.5 w-3.5 shrink-0 text-primary" />
-                ) : (
-                  <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                )}
-                <span className="min-w-0 flex-1 truncate text-body-small">
-                  {projectName(project)}
-                </span>
-                <span className="shrink-0 text-caption text-muted-foreground">
-                  {relativeTime((project.most_recent_session ?? project.created_at) * 1000)}
-                </span>
-              </button>
+                  <motion.span
+                    animate={{ rotate: isExpanded ? 90 : 0 }}
+                    transition={{ duration: 0.15 }}
+                    className="text-muted-foreground"
+                  >
+                    <ChevronRight className="h-3 w-3" />
+                  </motion.span>
+                  {isExpanded ? (
+                    <FolderOpen className="h-3.5 w-3.5 shrink-0 text-primary" />
+                  ) : (
+                    <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  )}
+                  <span className="min-w-0 flex-1 truncate text-body-small">
+                    {projectName(project)}
+                  </span>
+                  <span className="shrink-0 text-caption text-muted-foreground group-hover/project:hidden">
+                    {relativeTime((project.most_recent_session ?? project.created_at) * 1000)}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  title="删除该项目的历史记录"
+                  aria-label="删除该项目的历史记录"
+                  onClick={() =>
+                    setPendingDelete({
+                      kind: "project",
+                      project,
+                      sessionCount: sessions.length,
+                    })
+                  }
+                  className={cn(
+                    "mr-1 hidden shrink-0 rounded p-1 transition-colors group-hover/project:block",
+                    "text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                  )}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </div>
 
               <AnimatePresence initial={false}>
                 {isExpanded && (
@@ -338,28 +432,46 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
                     {sessions.map((session) => {
                       const isActive = session.id === activeSessionId;
                       return (
-                        <button
+                        <div
                           key={session.id}
-                          type="button"
-                          onClick={() => openSession(project, session)}
                           className={cn(
-                            "group flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left transition-colors",
+                            "group/session flex w-full items-center gap-0.5 rounded transition-colors",
                             isActive ? "bg-accent text-foreground" : "hover:bg-accent/50"
                           )}
                         >
-                          <MessageSquare
+                          <button
+                            type="button"
+                            onClick={() => openSession(project, session)}
+                            className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left"
+                          >
+                            <MessageSquare
+                              className={cn(
+                                "h-3 w-3 shrink-0",
+                                isActive ? "text-primary" : "text-muted-foreground"
+                              )}
+                            />
+                            <span className="min-w-0 flex-1 truncate text-caption">
+                              {sessionLabel(session)}
+                            </span>
+                            <span className="shrink-0 text-caption text-muted-foreground group-hover/session:hidden">
+                              {relativeTime(sessionTime(session))}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            title="删除该会话"
+                            aria-label="删除该会话"
+                            onClick={() =>
+                              setPendingDelete({ kind: "session", project, session })
+                            }
                             className={cn(
-                              "h-3 w-3 shrink-0",
-                              isActive ? "text-primary" : "text-muted-foreground"
+                              "mr-1 hidden shrink-0 rounded p-1 transition-colors group-hover/session:block",
+                              "text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                             )}
-                          />
-                          <span className="min-w-0 flex-1 truncate text-caption">
-                            {sessionLabel(session)}
-                          </span>
-                          <span className="shrink-0 text-caption text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
-                            {relativeTime(sessionTime(session))}
-                          </span>
-                        </button>
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        </div>
                       );
                     })}
                   </motion.div>
@@ -370,5 +482,82 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
         })}
       </div>
     </aside>
+
+    {/* Deletion confirmation (project or single session) */}
+    <Dialog
+      open={!!pendingDelete}
+      onOpenChange={(open) => {
+        if (!open && !isDeleting) {
+          setPendingDelete(null);
+          setDeleteError(null);
+        }
+      }}
+    >
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-destructive/10">
+              <AlertTriangle className="h-4 w-4 text-destructive" />
+            </div>
+            <DialogTitle>
+              {pendingDelete?.kind === "project" ? "删除该项目的历史？" : "删除这个会话？"}
+            </DialogTitle>
+          </div>
+          <DialogDescription className="pt-2">
+            {pendingDelete?.kind === "project" ? (
+              <>
+                <span className="font-medium text-foreground">
+                  {projectName(pendingDelete.project)}
+                </span>{" "}
+                的 {pendingDelete.sessionCount} 个会话记录将被永久删除。
+              </>
+            ) : (
+              <>
+                会话{" "}
+                <span className="font-medium text-foreground">
+                  {pendingDelete ? sessionLabel(pendingDelete.session) : ""}
+                </span>{" "}
+                的记录将被永久删除。
+              </>
+            )}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">源码文件不会被删除</span>
+          ，只移除 <code className="px-1">~/.claude/projects</code> 下的对话记录；对应的用量与成本统计也会一起消失。
+        </div>
+
+        {deleteError && (
+          <p className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
+            {deleteError}
+          </p>
+        )}
+
+        <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setPendingDelete(null);
+              setDeleteError(null);
+            }}
+            disabled={isDeleting}
+          >
+            取消
+          </Button>
+          <Button variant="destructive" onClick={confirmDelete} disabled={isDeleting}>
+            {isDeleting ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                删除中…
+              </>
+            ) : (
+              "永久删除"
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 };
