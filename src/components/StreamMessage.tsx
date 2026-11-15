@@ -52,12 +52,17 @@ interface StreamMessageProps {
    * open it in a preview panel.
    */
   onFileOpen?: (target: string) => void;
+  /**
+   * Called when a local file link is right-clicked, with the pointer position
+   * so the parent can place a context menu.
+   */
+  onFileContextMenu?: (target: string, position: { x: number; y: number }) => void;
 }
 
 /**
  * Component to render a single Claude Code stream message
  */
-const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, className, streamMessages, onLinkDetected, onFileOpen }) => {
+const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, className, streamMessages, onLinkDetected, onFileOpen, onFileContextMenu }) => {
   // State to track tool results mapped by tool call ID
   const [toolResults, setToolResults] = useState<Map<string, any>>(new Map());
   
@@ -88,6 +93,14 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
           event.preventDefault();
           event.stopPropagation();
           onFileOpen(href);
+        }}
+        onContextMenu={(event) => {
+          // Offer actions that only make sense for a real path: reveal it in the
+          // file manager, or open the preview panel.
+          if (!onFileContextMenu) return;
+          event.preventDefault();
+          event.stopPropagation();
+          onFileContextMenu(href, { x: event.clientX, y: event.clientY });
         }}
         {...rest}
       >

@@ -219,6 +219,56 @@ fn preview_target_path(target: &str, base_dir: Option<&str>) -> Result<PathBuf, 
     Err(err)
 }
 
+/// Opens the system file manager with the target selected.
+///
+/// Uses the same three-tier resolution as the preview panel, so a link written
+/// relative to the agent's working directory still lands on the right file
+/// rather than on a path that merely looks plausible.
+#[tauri::command]
+pub async fn reveal_file_location(path: String, base_dir: Option<String>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || reveal_in_file_manager(path, base_dir))
+        .await
+        .map_err(|e| format!("Reveal task failed: {}", e))?
+}
+
+fn reveal_in_file_manager(path: String, base_dir: Option<String>) -> Result<(), String> {
+    let resolved = preview_target_path(&path, base_dir.as_deref())?;
+    let shown = resolved.display().to_string();
+
+    #[cfg(target_os = "windows")]
+    {
+        // "/select,<path>" opens Explorer with the item highlighted. It has to
+        // travel as a single argument: Explorer does its own quote parsing and
+        // splits on spaces otherwise.
+        let arg = format!("/select,\"{}\"", shown);
+        std::process::Command::new("explorer")
+            .arg(arg)
+            .spawn()
+            .map_err(|e| format!("Failed to open Explorer: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&resolved)
+            .spawn()
+            .map_err(|e| format!("Failed to open Finder: {}", e))?;
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let dir = resolved.parent().unwrap_or(resolved.as_path());
+        std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open file manager: {}", e))?;
+    }
+
+    log::info!("Revealed in file manager: {}", shown);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn read_file_preview(
     path: String,
@@ -426,5 +476,35 @@ mod tests {
 
         let found = preview_target_path("renders/文案.md", Some(base)).unwrap();
         assert!(found.ends_with("文案.md"), "{:?}", found);
+    }
+
+    #[test]
+    fn reveal_reports_missing_files_instead_of_opening_anything() {
+        // Guards must run before any process is spawned: with a missing target
+        // this returns an error, so no Explorer window is opened.
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().to_str().unwrap();
+
+        let err = super::reveal_in_file_manager(
+            "nested/missing.md".to_string(),
+            Some(base.to_string()),
+        )
+        .unwrap_err();
+        assert!(err.to_lowercase().contains("not found"), "{}", err);
+    }
+
+    #[test]
+    fn reveal_refuses_targets_outside_the_project() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().join("project");
+        fs::create_dir_all(&base).unwrap();
+        write_file(tmp.path(), "outside/secret.md", b"secret");
+
+        let err = super::reveal_in_file_manager(
+            "outside/secret.md".to_string(),
+            Some(base.to_str().unwrap().to_string()),
+        )
+        .unwrap_err();
+        assert!(!err.is_empty());
     }
 }

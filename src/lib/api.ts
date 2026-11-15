@@ -543,6 +543,20 @@ export const api = {
   },
 
   /**
+   * Opens the system file manager with the given file selected.
+   *
+   * Resolved with the same rules as the preview panel, so relative targets
+   * written against the agent's working directory still resolve correctly.
+   */
+  async revealFileLocation(path: string, baseDir?: string): Promise<void> {
+    if (isTauriRuntime()) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<void>("reveal_file_location", { path, baseDir });
+    }
+    return apiCall<void>("reveal_file_location", { path, baseDir });
+  },
+
+  /**
    * Deletes a project's stored conversation history (its whole folder under
    * ~/.claude/projects). The source directory is not touched.
    *

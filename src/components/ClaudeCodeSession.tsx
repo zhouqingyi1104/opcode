@@ -7,7 +7,9 @@ import {
   ChevronUp,
   X,
   Hash,
-  Wrench
+  Wrench,
+  FolderOpen,
+  Eye
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -104,6 +106,13 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
   // File preview opened by clicking a local path in a message
   const [filePreviewTarget, setFilePreviewTarget] = useState<string | null>(null);
   const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
+  /** Right-click menu for a file link: where it is, and what failed if it did. */
+  const [fileMenu, setFileMenu] = useState<{
+    target: string;
+    x: number;
+    y: number;
+    error?: string;
+  } | null>(null);
   const [isFilePreviewLoading, setIsFilePreviewLoading] = useState(false);
   const [filePreviewError, setFilePreviewError] = useState<string | null>(null);
   const [showPreviewPrompt, setShowPreviewPrompt] = useState(false);
@@ -1209,18 +1218,55 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
     }
   };
 
+  /** Markdown hrefs are URL-encoded; file paths on disk are not. */
+  const decodeTarget = (target: string) => {
+    try {
+      return decodeURIComponent(target);
+    } catch {
+      return target;
+    }
+  };
+
+  /**
+   * Opens the file manager with the linked file selected. Failures stay in the
+   * menu so the reason ("file not found") is shown next to what was clicked.
+   */
+  const handleRevealInFileManager = async (target: string) => {
+    try {
+      await api.revealFileLocation(decodeTarget(target), projectPath ?? undefined);
+      setFileMenu(null);
+    } catch (err) {
+      const detail = typeof err === "string" ? err : err instanceof Error ? err.message : "";
+      setFileMenu((prev) =>
+        prev ? { ...prev, error: detail || "无法打开所在文件夹" } : prev
+      );
+    }
+  };
+
+  /** Dismiss the file menu on scroll, resize or Escape. */
+  useEffect(() => {
+    if (!fileMenu) return;
+    const close = () => setFileMenu(null);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    // Capture phase: scrolling happens inside the transcript container.
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [fileMenu]);
+
   /**
    * Opens a file referenced by a message link in the right-hand panel.
    * Relative targets are resolved against the session's project directory.
    */
-  const handleFileOpen = async (target: string) => {
-    // Markdown hrefs are URL-encoded; file paths on disk are not.
-    let path = target;
-    try {
-      path = decodeURIComponent(target);
-    } catch {
-      // leave as-is when the target is not valid percent-encoding
-    }
+  const handleFileOpen = async (target: string) => {    // Markdown hrefs are URL-encoded; file paths on disk are not.
+    const path = decodeTarget(target);
 
     setFilePreviewTarget(path);
     setFilePreview(null);
@@ -1237,8 +1283,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
     }
   };
 
-  const handleCloseFilePreview = () => {
-    setFilePreviewTarget(null);
+  const handleCloseFilePreview = () => {    setFilePreviewTarget(null);
     setFilePreview(null);
     setFilePreviewError(null);
   };
@@ -1354,6 +1399,9 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
                   streamMessages={messages}
                   onLinkDetected={handleLinkDetected}
                   onFileOpen={handleFileOpen}
+                  onFileContextMenu={(target, position) =>
+                    setFileMenu({ target, ...position })
+                  }
                 />
               </motion.div>
             );
@@ -1755,6 +1803,59 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
             </div>
           )}
         </ErrorBoundary>
+
+        {/* Right-click menu for local file links */}
+        {fileMenu && (
+          <>
+            <div
+              className="fixed inset-0 z-[90]"
+              onClick={() => setFileMenu(null)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setFileMenu(null);
+              }}
+            />
+            <div
+              className="fixed z-[95] w-64 rounded-md border border-border bg-popover p-1 shadow-lg"
+              style={{
+                left: Math.max(8, Math.min(fileMenu.x, window.innerWidth - 264)),
+                top: Math.max(8, Math.min(fileMenu.y, window.innerHeight - 148)),
+              }}
+            >
+              <p
+                className="truncate px-2 py-1 text-caption text-muted-foreground"
+                title={fileMenu.target}
+              >
+                {fileMenu.target.split(/[\\/]/).pop() || fileMenu.target}
+              </p>
+              <button
+                type="button"
+                onClick={() => void handleRevealInFileManager(fileMenu.target)}
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-body-small transition-colors hover:bg-accent"
+              >
+                <FolderOpen className="h-3.5 w-3.5 text-muted-foreground" />
+                打开所在文件夹
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const target = fileMenu.target;
+                  setFileMenu(null);
+                  void handleFileOpen(target);
+                }}
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-body-small transition-colors hover:bg-accent"
+              >
+                <Eye className="h-3.5 w-3.5 text-muted-foreground" />
+                在面板中预览
+              </button>
+              {fileMenu.error && (
+                <p className="px-2 pt-1 pb-0.5 text-caption text-destructive">
+                  {fileMenu.error}
+                </p>
+              )}
+            </div>
+          </>
+        )}
 
         {/* Timeline */}
         <AnimatePresence>
