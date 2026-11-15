@@ -1,4 +1,4 @@
-import { apiCall } from './apiAdapter';
+import { apiCall, isTauriRuntime } from './apiAdapter';
 import type { HooksConfiguration } from '@/types/hooks';
 
 /** Process type for tracking in ProcessRegistry */
@@ -527,8 +527,16 @@ export const api = {
   /**
    * Reads a file for the preview panel. Relative paths are resolved against
    * `baseDir`; paths escaping the project are rejected by the backend.
+   *
+   * Called through invoke directly: the shared apiCall() helper falls back to
+   * the web REST path on any error, which turned a plain "File not found" into
+   * a confusing "Unexpected token '<'" message in the panel.
    */
   async readFilePreview(path: string, baseDir?: string): Promise<FilePreview> {
+    if (isTauriRuntime()) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<FilePreview>("read_file_preview", { path, baseDir });
+    }
     return apiCall<FilePreview>("read_file_preview", { path, baseDir });
   },
 
