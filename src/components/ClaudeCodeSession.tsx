@@ -235,7 +235,10 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
   const rowVirtualizer = useVirtualizer({
     count: displayableMessages.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 150, // Estimate, will be dynamically measured
+    estimateSize: () => 150,
+    // Without this option virtualizer.measureElement() is a no-op, so every row
+    // stayed at the 150px estimate and short messages left blank gaps.
+    measureElement: (element) => element.getBoundingClientRect().height,
     overscan: 5,
   });
 
@@ -1294,12 +1297,14 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
               <motion.div
                 key={virtualItem.key}
                 data-index={virtualItem.index}
-                ref={(el) => el && rowVirtualizer.measureElement(el)}
+                ref={(el) => {
+                  if (el) rowVirtualizer.measureElement(el);
+                }}
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -8 }}
                 transition={{ duration: 0.3 }}
-                className="absolute inset-x-4 pb-4"
+                className="absolute inset-x-4 pb-4 empty:hidden"
                 style={{
                   top: virtualItem.start,
                 }}
