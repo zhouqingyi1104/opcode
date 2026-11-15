@@ -26,10 +26,15 @@ export const MessageList: React.FC<MessageListProps> = React.memo(({
   const userHasScrolledRef = useRef(false);
 
   // Virtual scrolling setup
+  //
+  // Rows differ wildly in height (a one-line status vs a large tool card), so
+  // heights must be measured instead of assumed. With a fixed 100px estimate and
+  // no measurement every short message left a blank gap and tall ones overlapped.
   const virtualizer = useVirtualizer({
     count: messages.length,
     getScrollElement: () => scrollContainerRef.current,
-    estimateSize: () => 100, // Estimated height of each message
+    estimateSize: () => 100,
+    measureElement: (element) => element.getBoundingClientRect().height,
     overscan: 5,
   });
 
@@ -111,6 +116,8 @@ export const MessageList: React.FC<MessageListProps> = React.memo(({
             return (
               <motion.div
                 key={key}
+                data-index={virtualItem.index}
+                ref={virtualizer.measureElement}
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95 }}
@@ -123,7 +130,9 @@ export const MessageList: React.FC<MessageListProps> = React.memo(({
                   transform: `translateY(${virtualItem.start}px)`,
                 }}
               >
-                <div className="px-4 py-2">
+                {/* empty:hidden collapses rows that render nothing (result
+                    events, meta messages) so they do not leave blank gaps */}
+                <div className="px-4 py-2 empty:hidden">
                   <StreamMessage 
                     message={message}
                     streamMessages={messages}
