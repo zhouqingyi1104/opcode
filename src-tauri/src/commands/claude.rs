@@ -564,9 +564,16 @@ pub(crate) fn create_command_with_env(program: &str) -> Command {
         }
     }
 
+    // Node refuses to use self-signed certs whose signature it cannot verify.
+    // System root bundles on Windows still ship 1990s MD2/MD5 roots, which makes
+    // every Claude Code start print a scary "ignored the certificate" warning.
+    // Hand the child a filtered copy instead of disabling the check globally.
+    if let Some(sanitized) = crate::ca_bundle::sanitized_bundle_path() {
+        tokio_cmd.env("NODE_EXTRA_CA_CERTS", sanitized);
+    }
+
     // Add NVM support if the program is in an NVM directory
-    if program.contains("/.nvm/versions/node/") {
-        if let Some(node_bin_dir) = std::path::Path::new(program).parent() {
+    if program.contains("/.nvm/versions/node/") {        if let Some(node_bin_dir) = std::path::Path::new(program).parent() {
             let current_path = std::env::var("PATH").unwrap_or_default();
             let node_bin_str = node_bin_dir.to_string_lossy();
             if !current_path.contains(&node_bin_str.as_ref()) {
