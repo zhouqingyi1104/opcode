@@ -44,6 +44,8 @@ const TabPanel: React.FC<TabPanelProps> = ({ tab, isActive }) => {
   const [loading, setLoading] = React.useState(false);
   const [sessionToDelete, setSessionToDelete] = React.useState<Session | null>(null);
   const [isDeleting, setIsDeleting] = React.useState(false);
+  const [projectToDelete, setProjectToDelete] = React.useState<Project | null>(null);
+  const [isDeletingProject, setIsDeletingProject] = React.useState(false);
   
   // Track screen when tab becomes active
   useScreenTracking(isActive ? tab.type : undefined, isActive ? tab.id : undefined);
@@ -91,8 +93,7 @@ const TabPanel: React.FC<TabPanelProps> = ({ tab, isActive }) => {
     }
   };
 
-  const confirmDeleteSession = async () => {
-    if (!sessionToDelete) return;
+  const confirmDeleteSession = async () => {    if (!sessionToDelete) return;
     const target = sessionToDelete;
     try {
       setIsDeleting(true);
@@ -106,6 +107,27 @@ const TabPanel: React.FC<TabPanelProps> = ({ tab, isActive }) => {
     } finally {
       setIsDeleting(false);
       setSessionToDelete(null);
+    }
+  };
+
+  const confirmDeleteProject = async () => {
+    if (!projectToDelete) return;
+    const target = projectToDelete;
+    try {
+      setIsDeletingProject(true);
+      await api.deleteProject(target.id);
+      setProjects((prev) => prev.filter((p) => p.id !== target.id));
+      // If we were looking inside that project, fall back to the list.
+      if (selectedProject?.id === target.id) {
+        setSelectedProject(null);
+        setSessions([]);
+      }
+    } catch (err) {
+      console.error("Failed to delete project:", err);
+      setError("Failed to delete project history. A session may still be running.");
+    } finally {
+      setIsDeletingProject(false);
+      setProjectToDelete(null);
     }
   };
 
@@ -320,10 +342,72 @@ const TabPanel: React.FC<TabPanelProps> = ({ tab, isActive }) => {
                 <ProjectList
                   projects={projects}
                   onProjectClick={handleProjectClick}
+                  onDeleteProject={(project) => setProjectToDelete(project)}
                   onOpenProject={handleOpenProject}
                   loading={loading}
                 />
               )}
+
+              {/* Project deletion confirmation */}
+              <Dialog
+                open={!!projectToDelete}
+                onOpenChange={(open) => {
+                  if (!open && !isDeletingProject) setProjectToDelete(null);
+                }}
+              >
+                <DialogContent className="max-w-md">
+                  <DialogHeader>
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-destructive/10">
+                        <AlertTriangle className="h-4 w-4 text-destructive" />
+                      </div>
+                      <DialogTitle>Delete this project&apos;s history?</DialogTitle>
+                    </div>
+                    <DialogDescription className="pt-2">
+                      All stored conversations for{" "}
+                      <span className="font-medium text-foreground">
+                        {projectToDelete?.path.split(/[\\/]/).pop()}
+                      </span>{" "}
+                      ({projectToDelete?.sessions.length ?? 0} session
+                      {(projectToDelete?.sessions.length ?? 0) === 1 ? "" : "s"}) will be
+                      permanently deleted.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground space-y-1">
+                    <p>
+                      <span className="font-medium text-foreground">
+                        Your source files are not touched.
+                      </span>{" "}
+                      Only Claude&apos;s copy under{" "}
+                      <code className="px-1">~/.claude/projects</code> is removed.
+                    </p>
+                    <p>Usage and cost records for these sessions disappear too.</p>
+                  </div>
+                  <DialogFooter>
+                    <Button
+                      variant="outline"
+                      onClick={() => setProjectToDelete(null)}
+                      disabled={isDeletingProject}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      onClick={confirmDeleteProject}
+                      disabled={isDeletingProject}
+                    >
+                      {isDeletingProject ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Deleting…
+                        </>
+                      ) : (
+                        "Delete history"
+                      )}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
           </div>
         );
       

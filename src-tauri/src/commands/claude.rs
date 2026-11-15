@@ -748,9 +748,82 @@ fn delete_session_in(projects_root: &Path, session_id: &str) -> Result<PathBuf, 
     Ok(canonical_target)
 }
 
+/// Deletes a whole project folder from `~/.claude/projects`.
+///
+/// This only removes Claude's stored conversation history for that project —
+/// the actual source directory is never touched. Returns how many session logs
+/// were removed.
+#[tauri::command]
+pub async fn delete_project(project_id: String) -> Result<usize, String> {
+    tokio::task::spawn_blocking(move || delete_project_blocking(&project_id))
+        .await
+        .map_err(|e| format!("Failed to delete project: {}", e))?
+}
+
+fn delete_project_blocking(project_id: &str) -> Result<usize, String> {
+    let projects_root = get_claude_dir()
+        .map_err(|e| e.to_string())?
+        .join("projects");
+
+    if !projects_root.exists() {
+        return Err("Claude projects directory not found".to_string());
+    }
+
+    delete_project_in(&projects_root, project_id)
+}
+
+/// Removes `<projects_root>/<project_id>` and returns the number of `.jsonl`
+/// logs that were inside it.
+fn delete_project_in(projects_root: &Path, project_id: &str) -> Result<usize, String> {
+    // Project ids are encoded paths like `D--PersonalDatabase`. They may contain
+    // dots and dashes, but never separators or traversal segments.
+    if project_id.is_empty()
+        || project_id.contains('/')
+        || project_id.contains('\\')
+        || project_id.contains("..")
+        || project_id.contains(':')
+    {
+        return Err("Invalid project id".to_string());
+    }
+
+    let target = projects_root.join(project_id);
+    if !target.exists() {
+        return Err(format!("Project not found: {}", project_id));
+    }
+    if !target.is_dir() {
+        return Err("Project path is not a directory".to_string());
+    }
+
+    // Defence in depth: resolve both sides and prove containment.
+    let canonical_root = projects_root.canonicalize().map_err(|e| e.to_string())?;
+    let canonical_target = target.canonicalize().map_err(|e| e.to_string())?;
+    if canonical_target == canonical_root || !canonical_target.starts_with(&canonical_root) {
+        return Err("Refusing to delete outside the projects directory".to_string());
+    }
+
+    // Count what is about to go, so the UI can report it.
+    let session_count = walkdir::WalkDir::new(&canonical_target)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry.path().is_file()
+                && entry.path().extension().and_then(|s| s.to_str()) == Some("jsonl")
+        })
+        .count();
+
+    fs::remove_dir_all(&canonical_target)
+        .map_err(|e| format!("Failed to delete project: {}", e))?;
+
+    log::info!(
+        "Deleted project folder: {:?} ({} session logs)",
+        canonical_target,
+        session_count
+    );
+    Ok(session_count)
+}
+
 #[cfg(test)]
-mod delete_session_tests {
-    use super::delete_session_in;
+mod delete_session_tests {    use super::delete_session_in;
     use std::fs;
     use tempfile::TempDir;
 
@@ -3285,5 +3358,80 @@ mod tests {
         let start = Instant::now();
         let _ = get_project_path_from_sessions(&big);
         println!("BASELINE 1 project, ~100MB session: {:?}", start.elapsed());
+    }
+}
+
+#[cfg(test)]
+mod delete_project_tests {
+    use super::delete_project_in;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn make_project(root: &std::path::Path, id: &str, sessions: &[&str]) -> std::path::PathBuf {
+        let dir = root.join(id);
+        fs::create_dir_all(&dir).unwrap();
+        for name in sessions {
+            fs::write(dir.join(format!("{}.jsonl", name)), b"{}\n").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn deletes_folder_and_reports_session_count() {
+        let tmp = TempDir::new().unwrap();
+        let target = make_project(tmp.path(), "D--SomeProject", &["a", "b", "c"]);
+        let sibling = make_project(tmp.path(), "D--OtherProject", &["x"]);
+
+        let removed = delete_project_in(tmp.path(), "D--SomeProject").unwrap();
+
+        assert_eq!(removed, 3);
+        assert!(!target.exists(), "target folder should be gone");
+        assert!(sibling.exists(), "sibling project must survive");
+    }
+
+    #[test]
+    fn rejects_path_like_ids() {
+        let tmp = TempDir::new().unwrap();
+        make_project(tmp.path(), "D--Real", &["a"]);
+
+        for bad in ["../D--Real", "sub/D--Real", "sub\\D--Real", "..", "", "C:////Windows"] {
+            let err = delete_project_in(tmp.path(), bad).unwrap_err();
+            assert!(err.contains("Invalid project id"), "{} -> {}", bad, err);
+        }
+    }
+
+    #[test]
+    fn errors_when_project_is_missing() {
+        let tmp = TempDir::new().unwrap();
+        make_project(tmp.path(), "D--Exists", &["a"]);
+
+        let err = delete_project_in(tmp.path(), "D--Missing").unwrap_err();
+        assert!(err.contains("Project not found"), "{}", err);
+    }
+
+    #[test]
+    fn refuses_to_delete_the_root_itself() {
+        let tmp = TempDir::new().unwrap();
+        make_project(tmp.path(), "D--Real", &["a"]);
+
+        // "." survives the id guards but resolves to the root; canonicalisation
+        // and the equality check must stop it.
+        let err = delete_project_in(tmp.path(), ".").unwrap_err();
+        assert!(
+            err.contains("Refusing to delete") || err.contains("not a directory"),
+            "{}",
+            err
+        );
+        assert!(tmp.path().join("D--Real").exists());
+    }
+
+    #[test]
+    fn leaves_non_jsonl_files_out_of_the_count() {
+        let tmp = TempDir::new().unwrap();
+        let dir = make_project(tmp.path(), "D--Mixed", &["a"]);
+        fs::write(dir.join("notes.txt"), b"hello").unwrap();
+
+        let removed = delete_project_in(tmp.path(), "D--Mixed").unwrap();
+        assert_eq!(removed, 1);
     }
 }

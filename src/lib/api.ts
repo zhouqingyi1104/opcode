@@ -507,6 +507,21 @@ export const api = {
   },
 
   /**
+   * Deletes a project's stored conversation history (its whole folder under
+   * ~/.claude/projects). The source directory is not touched.
+   *
+   * @returns the number of session logs that were removed
+   */
+  async deleteProject(projectId: string): Promise<number> {
+    try {
+      return await apiCall<number>("delete_project", { projectId });
+    } catch (error) {
+      console.error("Failed to delete project:", error);
+      throw error;
+    }
+  },
+
+  /**
    * Permanently deletes a session log file.
    *
    * This also removes the session's usage records, since the usage dashboard

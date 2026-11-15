@@ -3,7 +3,8 @@ import { motion } from "framer-motion";
 import { 
   FolderOpen,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Trash2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -19,6 +20,11 @@ interface ProjectListProps {
    * Callback when a project is clicked
    */
   onProjectClick: (project: Project) => void;
+  /**
+   * Callback when a project's stored history should be deleted.
+   * The parent owns confirmation and the API call.
+   */
+  onDeleteProject?: (project: Project) => void;
   /**
    * Callback when open project is clicked
    */
@@ -86,6 +92,7 @@ const getDisplayPath = (path: string, maxLength: number = 30): string => {
 export const ProjectList: React.FC<ProjectListProps> = ({
   projects,
   onProjectClick,
+  onDeleteProject,
   onOpenProject,
   className,
 }) => {
@@ -175,19 +182,39 @@ export const ProjectList: React.FC<ProjectListProps> = ({
                 }}
                 className="group"
               >
-                <motion.button
-                  onClick={() => onProjectClick(project)}
-                  whileTap={{ scale: 0.97 }}
-                  transition={{ duration: 0.15 }}
-                  className="w-full text-left px-3 py-2 rounded-md hover:bg-accent/50 transition-colors flex items-center justify-between"
-                >
-                  <span className="text-body-small font-medium">
-                    {getProjectName(project.path)}
-                  </span>
-                  <span className="text-caption text-muted-foreground font-mono text-right" style={{ minWidth: '200px' }}>
-                    {getDisplayPath(project.path, 35)}
-                  </span>
-                </motion.button>
+                <div className="flex items-center gap-1">
+                  <motion.button
+                    onClick={() => onProjectClick(project)}
+                    whileTap={{ scale: 0.97 }}
+                    transition={{ duration: 0.15 }}
+                    className="flex-1 min-w-0 text-left px-3 py-2 rounded-md hover:bg-accent/50 transition-colors flex items-center justify-between"
+                  >
+                    <span className="text-body-small font-medium">
+                      {getProjectName(project.path)}
+                    </span>
+                    <span className="text-caption text-muted-foreground font-mono text-right" style={{ minWidth: '200px' }}>
+                      {getDisplayPath(project.path, 35)}
+                    </span>
+                  </motion.button>
+                  {onDeleteProject && (
+                    <button
+                      type="button"
+                      title="Delete stored history"
+                      aria-label="Delete stored history"
+                      className={cn(
+                        "shrink-0 p-1.5 rounded transition-all",
+                        "opacity-0 group-hover:opacity-100 focus:opacity-100",
+                        "text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                      )}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onDeleteProject(project);
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
               </motion.div>
             ))}
           </div>
