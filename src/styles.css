@@ -85,6 +85,33 @@ html {
   background-color: var(--color-muted-foreground);
 }
 
+/* Transcript scrollbar: wide enough to actually see and grab.
+   WebView2 falls back to a nearly invisible overlay bar otherwise. */
+.scrollbar-transcript {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-muted-foreground) transparent;
+}
+
+.scrollbar-transcript::-webkit-scrollbar {
+  width: 10px;
+}
+
+.scrollbar-transcript::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-transcript::-webkit-scrollbar-thumb {
+  /* Inset border keeps the bar from touching the window edge. */
+  background-color: var(--color-muted-foreground);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: 999px;
+}
+
+.scrollbar-transcript::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-foreground);
+}
+
 /* Dark theme configuration */
 @theme {
   /* Colors */

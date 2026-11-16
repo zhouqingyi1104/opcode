@@ -113,6 +113,9 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
     y: number;
     error?: string;
   } | null>(null);
+  /** Measured height of the prompt bar, so the transcript can stop above it. */
+  const promptBarRef = useRef<HTMLDivElement>(null);
+  const [promptBarHeight, setPromptBarHeight] = useState(96);
   const [isFilePreviewLoading, setIsFilePreviewLoading] = useState(false);
   const [filePreviewError, setFilePreviewError] = useState<string | null>(null);
   const [showPreviewPrompt, setShowPreviewPrompt] = useState(false);
@@ -1243,6 +1246,27 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
     }
   };
 
+  /**
+   * The prompt bar is an overlay pinned to the bottom, so without this the tail
+   * of the transcript sits underneath it and the scrollbar runs to the window
+   * edge. Measuring it lets the content area reserve exactly that much room.
+   */
+  useEffect(() => {
+    const el = promptBarRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      // border-box: the reserved space has to cover the bar's border and
+      // padding too, not just its content.
+      const height = entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height;
+      if (height > 0) setPromptBarHeight(height);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   /** Dismiss the file menu on scroll, resize or Escape. */
   useEffect(() => {
     if (!fileMenu) return;
@@ -1363,7 +1387,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
   const messagesList = (
     <div
       ref={parentRef}
-      className="flex-1 overflow-y-auto relative pb-20"
+      className="scrollbar-transcript flex-1 overflow-y-auto relative pb-6"
       style={{
         contain: 'strict',
       }}
@@ -1466,11 +1490,15 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
       <div className={cn("relative flex flex-col h-full bg-background", className)}>
         <div className="w-full h-full flex flex-col">
 
-        {/* Main Content Area */}
-        <div className={cn(
-          "flex-1 overflow-hidden transition-all duration-300",
-          showTimeline && "sm:mr-96"
-        )}>
+        {/* Main Content Area — reserves room for the prompt bar so the
+            transcript (and its scrollbar) ends above it instead of behind it. */}
+        <div
+          className={cn(
+            "flex-1 overflow-hidden transition-all duration-300",
+            showTimeline && "sm:mr-96"
+          )}
+          style={{ paddingBottom: promptBarHeight }}
+        >
           {filePreviewTarget ? (
             <SplitPane
               left={
@@ -1693,7 +1721,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
             </motion.div>
           )}
 
-          <div className={cn(
+          <div ref={promptBarRef} className={cn(
             "absolute bottom-0 left-0 right-0 transition-all duration-300 z-50",
             showTimeline && "sm:right-96"
           )}>
