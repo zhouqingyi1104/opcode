@@ -632,6 +632,12 @@ export const BashWidget: React.FC<{
   description?: string;
   result?: any;
 }> = ({ command, description, result }) => {
+  // Long command output is collapsed by default: a directory listing or a build
+  // log can run for hundreds of lines and bury the rest of the conversation.
+  const [outputExpanded, setOutputExpanded] = useState(false);
+  const COLLAPSED_LINES = 8;
+  const AUTO_COLLAPSE_ABOVE = 12;
+
   // Extract result content if available
   let resultContent = '';
   let isError = false;
@@ -678,16 +684,47 @@ export const BashWidget: React.FC<{
         </code>
         
         {/* Show result if available */}
-        {result && (
-          <div className={cn(
-            "mt-3 p-3 rounded-md border text-xs font-mono whitespace-pre-wrap overflow-x-auto",
-            isError 
-              ? "border-red-500/20 bg-red-500/5 text-red-400" 
-              : "border-green-500/20 bg-green-500/5 text-green-300"
-          )}>
-            {resultContent || (isError ? "Command failed" : "Command completed")}
-          </div>
-        )}
+        {result && (() => {
+          const lines = resultContent ? resultContent.split('\n') : [];
+          const isLongOutput = lines.length > AUTO_COLLAPSE_ABOVE;
+          const visibleOutput =
+            isLongOutput && !outputExpanded
+              ? `${lines.slice(0, COLLAPSED_LINES).join('\n')}\n…`
+              : resultContent;
+
+          return (
+            <>
+              <div className={cn(
+                "mt-3 p-3 rounded-md border text-xs font-mono whitespace-pre-wrap overflow-x-auto",
+                isError 
+                  ? "border-red-500/20 bg-red-500/5 text-red-400" 
+                  : "border-green-500/20 bg-green-500/5 text-green-300"
+              )}>
+                {visibleOutput || (isError ? "Command failed" : "Command completed")}
+              </div>
+
+              {isLongOutput && (
+                <button
+                  type="button"
+                  onClick={() => setOutputExpanded((v) => !v)}
+                  className="mt-1 flex items-center gap-1 rounded px-1.5 py-1 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  {outputExpanded ? (
+                    <>
+                      <ChevronUp className="h-3 w-3" />
+                      收起输出
+                    </>
+                  ) : (
+                    <>
+                      <ChevronDown className="h-3 w-3" />
+                      展开全部（共 {lines.length} 行）
+                    </>
+                  )}
+                </button>
+              )}
+            </>
+          );
+        })()}
       </div>
     </div>
   );
@@ -1492,6 +1529,15 @@ export const CommandOutputWidget: React.FC<{
   output: string;
   onLinkDetected?: (url: string) => void;
 }> = ({ output, onLinkDetected }) => {
+  // Same rule as the bash widget: long stdout is collapsed until asked for.
+  const [expanded, setExpanded] = useState(false);
+  const COLLAPSED_LINES = 8;
+  const AUTO_COLLAPSE_ABOVE = 12;
+  const lines = output ? output.split('\n') : [];
+  const isLong = lines.length > AUTO_COLLAPSE_ABOVE;
+  const visibleText =
+    isLong && !expanded ? `${lines.slice(0, COLLAPSED_LINES).join('\n')}\n…` : output;
+
   // Check for links on mount and when output changes
   React.useEffect(() => {
     if (output && onLinkDetected) {
@@ -1551,8 +1597,27 @@ export const CommandOutputWidget: React.FC<{
       </div>
       <div className="p-3">
         <pre className="text-sm font-mono text-zinc-300 whitespace-pre-wrap">
-          {output ? parseAnsiToReact(output) : <span className="text-zinc-500 italic">No output</span>}
+          {output ? parseAnsiToReact(visibleText) : <span className="text-zinc-500 italic">No output</span>}
         </pre>
+        {isLong && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="mt-1 flex items-center gap-1 rounded px-1.5 py-1 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            {expanded ? (
+              <>
+                <ChevronUp className="h-3 w-3" />
+                收起输出
+              </>
+            ) : (
+              <>
+                <ChevronDown className="h-3 w-3" />
+                展开全部（共 {lines.length} 行）
+              </>
+            )}
+          </button>
+        )}
       </div>
     </div>
   );
