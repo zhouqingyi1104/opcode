@@ -208,7 +208,7 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
                 title={copiedReply ? "已复制" : "复制这条回复"}
                 aria-label={copiedReply ? "已复制" : "复制这条回复"}
                 className={cn(
-                  "absolute right-2 top-2 rounded-md p-1.5 transition-all",
+                  "absolute bottom-2 right-2 rounded-md p-1.5 transition-all",
                   copiedReply
                     ? "text-green-500 opacity-100"
                     : "text-muted-foreground opacity-0 hover:bg-background/80 hover:text-foreground group-hover/reply:opacity-100"
