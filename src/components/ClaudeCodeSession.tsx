@@ -1369,7 +1369,7 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
       }}
     >
       <div
-        className="relative w-full max-w-6xl mx-auto px-4 pt-8 pb-4"
+        className="relative w-full max-w-6xl mx-auto px-6 pt-8 pb-4"
         style={{
           height: `${Math.max(rowVirtualizer.getTotalSize(), 100)}px`,
           minHeight: '100px',
@@ -1519,13 +1519,19 @@ export const ClaudeCodeSession: React.FC<ClaudeCodeSessionProps> = ({
               className="h-full"
             />
           ) : (
-            // Original layout when no preview
-            <div className="h-full flex flex-col max-w-6xl mx-auto px-6">
-              {projectPathInput}
+            // Original layout when no preview.
+            //
+            // The width cap lives on the inner content, not on this wrapper:
+            // capping the wrapper left dead margins on both sides that belonged
+            // to no scroll container, so the wheel did nothing there.
+            <div className="h-full flex flex-col">
+              <div className="mx-auto w-full shrink-0 max-w-6xl px-6">
+                {projectPathInput}
+              </div>
               {messagesList}
               
               {isLoading && messages.length === 0 && (
-                <div className="flex items-center justify-center h-full">
+                <div className="flex flex-1 items-center justify-center">
                   <div className="flex items-center gap-3">
                     <div className="rotating-symbol text-primary" />
                     <span className="text-sm text-muted-foreground">
