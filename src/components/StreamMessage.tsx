@@ -1,10 +1,12 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { 
   Terminal, 
   User, 
   Bot, 
   AlertCircle, 
-  CheckCircle2
+  CheckCircle2,
+  Copy,
+  Check
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -65,6 +67,28 @@ interface StreamMessageProps {
 const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, className, streamMessages, onLinkDetected, onFileOpen, onFileContextMenu }) => {
   // State to track tool results mapped by tool call ID
   const [toolResults, setToolResults] = useState<Map<string, any>>(new Map());
+
+  /** Briefly true after copying, so the button can confirm it worked. */
+  const [copiedReply, setCopiedReply] = useState(false);
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+    };
+  }, []);
+
+  const copyReply = async (text: string) => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedReply(true);
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = window.setTimeout(() => setCopiedReply(false), 1600);
+    } catch (err) {
+      console.error("[StreamMessage] Copy failed:", err);
+    }
+  };
   
   // Get current theme
   const { theme } = useTheme();
@@ -161,10 +185,42 @@ const StreamMessageComponent: React.FC<StreamMessageProps> = ({ message, classNa
       const msg = message.message;
       
       let renderedSomething = false;
-      
+
+      // Everything the reply actually said, for the copy button. Tool calls and
+      // thinking blocks are excluded - copying those as prose would be useless.
+      const replyText = Array.isArray(msg.content)
+        ? msg.content
+            .filter((block: any) => block?.type === "text")
+            .map((block: any) =>
+              typeof block.text === "string" ? block.text : block.text?.text ?? ""
+            )
+            .filter((text: string) => text.trim().length > 0)
+            .join("\n\n")
+        : "";
+
       const renderedCard = (
-        <Card className={cn("border-primary/20 bg-primary/5", className)}>
+        <Card className={cn("group/reply relative border-primary/20 bg-primary/5", className)}>
           <CardContent className="p-4">
+            {replyText && (
+              <button
+                type="button"
+                onClick={() => void copyReply(replyText)}
+                title={copiedReply ? "已复制" : "复制这条回复"}
+                aria-label={copiedReply ? "已复制" : "复制这条回复"}
+                className={cn(
+                  "absolute right-2 top-2 rounded-md p-1.5 transition-all",
+                  copiedReply
+                    ? "text-green-500 opacity-100"
+                    : "text-muted-foreground opacity-0 hover:bg-background/80 hover:text-foreground group-hover/reply:opacity-100"
+                )}
+              >
+                {copiedReply ? (
+                  <Check className="h-3.5 w-3.5" />
+                ) : (
+                  <Copy className="h-3.5 w-3.5" />
+                )}
+              </button>
+            )}
             <div className="flex items-start gap-3">
               <Bot className="h-5 w-5 text-primary mt-0.5" />
               <div className="flex-1 space-y-2 min-w-0">
