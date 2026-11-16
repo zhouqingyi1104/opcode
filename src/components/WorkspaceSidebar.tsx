@@ -164,10 +164,29 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
     }
   }, []);
 
+  /**
+   * Invariant: an expanded project always has its sessions requested.
+   *
+   * Expansion happens from more than one place - the user clicking, and the
+   * startup path that auto-expands whichever project owns the active session.
+   * Driving the fetch from `expanded` instead of from the click handler means
+   * neither path can leave a project showing "暂无会话" while it is actually
+   * just never having been asked.
+   *
+   * Projects with a recorded error are skipped so a failure is not retried in a
+   * loop; the row offers an explicit 重试 for that case.
+   */
+  useEffect(() => {
+    for (const projectId of expanded) {
+      if (sessionsByProject[projectId] || loadingSessions[projectId]) continue;
+      if (sessionErrors[projectId]) continue;
+      const project = projects.find((p) => p.id === projectId);
+      if (project) void loadSessions(project);
+    }
+  }, [expanded, projects, sessionsByProject, loadingSessions, sessionErrors, loadSessions]);
+
   const toggleProject = useCallback(
     (project: Project) => {
-      const willExpand = !expanded.has(project.id);
-
       setExpanded((prev) => {
         const next = new Set(prev);
         if (next.has(project.id)) {
@@ -177,15 +196,9 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
         }
         return next;
       });
-
-      // Side effects must stay out of the updater: a setState call issued from
-      // inside another updater runs during the render phase and React drops it,
-      // which is why sessions used to never arrive.
-      if (willExpand && !sessionsByProject[project.id]) {
-        void loadSessions(project);
-      }
+      // The effect above takes care of loading on expand.
     },
-    [expanded, loadSessions, sessionsByProject]
+    []
   );
 
   const openSession = useCallback(
