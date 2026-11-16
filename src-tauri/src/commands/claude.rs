@@ -59,6 +59,10 @@ pub struct Session {
     pub custom_title: Option<String>,
     /// Timestamp of the first user message (if available)
     pub message_timestamp: Option<String>,
+    /// Context size of the last request. Resuming replays this much history, so
+    /// it is the best available signal for what continuing will cost.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<u64>,
 }
 
 /// Represents a message entry in the JSONL file
@@ -139,7 +143,7 @@ pub(crate) fn find_claude_binary(app_handle: &AppHandle) -> Result<String, Strin
 }
 
 /// Gets the path to the ~/.claude directory
-fn get_claude_dir() -> Result<PathBuf> {
+pub(crate) fn get_claude_dir() -> Result<PathBuf> {
     dirs::home_dir()
         .context("Could not find home directory")?
         .join(".claude")
@@ -537,6 +541,61 @@ fn extract_first_user_message(jsonl_path: &PathBuf) -> (Option<String>, Option<S
     }
 
     (None, None)
+}
+
+/// Reports the context size of the most recent request in a transcript.
+///
+/// Resuming replays the whole context, so this number is what decides the bill:
+/// a session sitting at 900K tokens has to re-write that much cache to continue,
+/// which at current cache-write prices is a few dollars for a single message.
+/// Only the tail is read - the value comes from the last completed request.
+fn extract_context_tokens(jsonl_path: &PathBuf) -> Option<u64> {
+    const TAIL_BYTES: u64 = 512 * 1024;
+
+    let mut file = fs::File::open(jsonl_path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(TAIL_BYTES);
+    if start > 0 {
+        use std::io::Seek;
+        file.seek(std::io::SeekFrom::Start(start)).ok()?;
+    }
+
+    let mut raw = Vec::new();
+    {
+        use std::io::Read;
+        file.read_to_end(&mut raw).ok()?;
+    }
+    let text = String::from_utf8_lossy(&raw);
+
+    let mut lines: Vec<&str> = text.lines().collect();
+    if start > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+
+    let mut latest: Option<u64> = None;
+    for line in lines {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(usage) = value
+            .get("message")
+            .and_then(|m| m.get("usage"))
+            .or_else(|| value.get("usage"))
+        else {
+            continue;
+        };
+
+        let field = |name: &str| usage.get(name).and_then(|v| v.as_u64()).unwrap_or(0);
+        let total = field("input_tokens")
+            + field("cache_creation_input_tokens")
+            + field("cache_read_input_tokens");
+
+        if total > 0 {
+            latest = Some(total);
+        }
+    }
+
+    latest
 }
 
 /// Reads the most recent `custom-title` record from the tail of a session log.
@@ -1203,6 +1262,7 @@ fn get_project_sessions_blocking(project_id: String) -> Result<Vec<Session>, Str
                 // A user-assigned title (written by /rename or by the sidebar)
                 // always wins over the first message.
                 let custom_title = extract_custom_title(&path);
+                let context_tokens = extract_context_tokens(&path);
 
                 // Try to load associated todo data
                 let todo_path = todos_dir.join(format!("{}.json", session_id));
@@ -1223,6 +1283,7 @@ fn get_project_sessions_blocking(project_id: String) -> Result<Vec<Session>, Str
                     first_message,
                     custom_title,
                     message_timestamp,
+                    context_tokens,
                 });
             }
         }
@@ -3664,5 +3725,58 @@ mod rename_session_tests {
 
         rename_session_in(tmp.path(), "sess-1", "deep title").unwrap();
         assert_eq!(extract_custom_title(&file).as_deref(), Some("deep title"));
+    }
+}
+
+#[cfg(test)]
+mod context_token_tests {
+    use super::extract_context_tokens;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write(path: &std::path::Path, lines: &[&str]) {
+        fs::write(path, lines.join("\n") + "\n").unwrap();
+    }
+
+    #[test]
+    fn reports_the_last_completed_request() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("s.jsonl");
+        write(
+            &file,
+            &[
+                r#"{"message":{"usage":{"input_tokens":10,"cache_creation_input_tokens":100,"cache_read_input_tokens":0}}}"#,
+                r#"{"message":{"usage":{"input_tokens":5,"cache_creation_input_tokens":20,"cache_read_input_tokens":800}}}"#,
+                // trailing rows without usage must not reset the value
+                r#"{"type":"summary"}"#,
+                r#"{"message":{"usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#,
+            ],
+        );
+
+        assert_eq!(extract_context_tokens(&file), Some(825));
+    }
+
+    #[test]
+    fn ignores_zero_usage_rows() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("s.jsonl");
+        write(
+            &file,
+            &[
+                r#"{"message":{"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#,
+            ],
+        );
+
+        assert_eq!(extract_context_tokens(&file), None);
+    }
+
+    #[test]
+    fn reads_usage_from_the_streaming_shape_too() {
+        // The usage object sits at the top level in some event shapes.
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("s.jsonl");
+        write(&file, &[r#"{"usage":{"input_tokens":7,"cache_read_input_tokens":42}}"#]);
+
+        assert_eq!(extract_context_tokens(&file), Some(49));
     }
 }

@@ -318,6 +318,117 @@ pub async fn stop_persistent_session(app: AppHandle, key: String) -> Result<(), 
     Ok(())
 }
 
+/// Reads the CLI's slash-command list without touching a real conversation.
+///
+/// The list only exists inside the `system/init` event, and the CLI emits that
+/// event once it receives its first message - so "just ask for the command list"
+/// is not possible; a turn has to be opened. This opens a throwaway session in
+/// the temp directory on the cheapest model with a one-character prompt, reads
+/// init, and kills the process.
+///
+/// Cost is a few thousand input tokens on haiku (well under a cent), which is
+/// why the caller should cache the result rather than probe on every launch.
+/// The session id is chosen up front so the transcript it leaves behind can be
+/// removed exactly, instead of guessing which file is "the new one".
+#[tauri::command]
+pub async fn probe_slash_commands(app: AppHandle) -> Result<Vec<String>, String> {
+    let claude_path = find_claude_binary(&app)?;
+    let session_id = uuid::Uuid::new_v4().to_string();
+
+    let work_dir = std::env::temp_dir().join("opcode-command-probe");
+    std::fs::create_dir_all(&work_dir)
+        .map_err(|e| format!("Failed to create probe directory: {}", e))?;
+
+    let mut args = build_session_args("haiku", None, None);
+    args.push("--session-id".to_string());
+    args.push(session_id.clone());
+
+    let mut cmd = create_command_with_env(&claude_path);
+    for arg in args {
+        cmd.arg(arg);
+    }
+    cmd.current_dir(&work_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to start claude: {}", e))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(user_message_line(".").as_bytes()).await;
+        let _ = stdin.flush().await;
+    }
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Probe process produced no stdout".to_string())?;
+    let mut lines = BufReader::new(stdout).lines();
+
+    let read_init = async {
+        while let Ok(Some(line)) = lines.next_line().await {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if value.get("type").and_then(|t| t.as_str()) != Some("system")
+                || value.get("subtype").and_then(|t| t.as_str()) != Some("init")
+            {
+                continue;
+            }
+            let commands = value
+                .get("slash_commands")
+                .and_then(|c| c.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            return Some(commands);
+        }
+        None
+    };
+
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(30), read_init).await;
+
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    cleanup_probe_transcript(&session_id);
+
+    match outcome {
+        Ok(Some(commands)) if !commands.is_empty() => {
+            log::info!("Probed {} slash commands from the CLI", commands.len());
+            Ok(commands)
+        }
+        Ok(_) => Err("CLI finished without reporting slash commands".to_string()),
+        Err(_) => Err("Timed out waiting for the CLI command list".to_string()),
+    }
+}
+
+/// Deletes the throwaway transcript created by `probe_slash_commands`.
+fn cleanup_probe_transcript(session_id: &str) {
+    let Ok(claude_dir) = super::claude::get_claude_dir() else {
+        return;
+    };
+    let projects = claude_dir.join("projects");
+    let Ok(entries) = std::fs::read_dir(&projects) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let file = entry.path().join(format!("{}.jsonl", session_id));
+        if file.is_file() {
+            match std::fs::remove_file(&file) {
+                Ok(()) => log::info!("Removed probe transcript: {:?}", file),
+                Err(e) => log::warn!("Could not remove probe transcript {:?}: {}", file, e),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{build_session_args, user_message_line};

@@ -63,6 +63,23 @@ function sessionLabel(session: Session): string {
   return `会话 ${session.id.slice(0, 8)}`;
 }
 
+/**
+ * Sessions above this carry enough history that resuming them re-writes a large
+ * prompt cache. The sidebar surfaces the number so the cost is visible before
+ * clicking, instead of arriving as a bill later.
+ */
+const HEAVY_CONTEXT_TOKENS = 200_000;
+
+function formatTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  return `${Math.round(tokens / 1000)}K`;
+}
+
+/** Rough cache-write cost of replaying a context, in USD (5m tier, ~$2.75/M). */
+function replayCostUsd(tokens: number): string {
+  return `$${((tokens / 1_000_000) * 2.75).toFixed(2)}`;
+}
+
 function sessionTime(session: Session): number {
   if (session.message_timestamp) {
     const parsed = Date.parse(session.message_timestamp);
@@ -564,9 +581,18 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({ className })
                             <span className="min-w-0 flex-1 truncate text-caption">
                               {sessionLabel(session)}
                             </span>
-                            <span className="shrink-0 text-caption text-muted-foreground group-hover/session:hidden">
-                              {relativeTime(sessionTime(session))}
-                            </span>
+                            {session.context_tokens && session.context_tokens >= HEAVY_CONTEXT_TOKENS ? (
+                              <span
+                                className="shrink-0 text-caption font-medium text-amber-500 group-hover/session:hidden"
+                                title={`此会话上下文约 ${formatTokens(session.context_tokens)} tokens；继续对话需重写缓存，约 ${replayCostUsd(session.context_tokens)}。不想付这笔钱就新开会话，旧记录会保留。`}
+                              >
+                                {formatTokens(session.context_tokens)}
+                              </span>
+                            ) : (
+                              <span className="shrink-0 text-caption text-muted-foreground group-hover/session:hidden">
+                                {relativeTime(sessionTime(session))}
+                              </span>
+                            )}
                           </button>
                           <button
                             type="button"

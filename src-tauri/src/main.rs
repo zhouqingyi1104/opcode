@@ -20,8 +20,8 @@ use commands::agents::{
 };
 use commands::file_preview::{read_file_preview, reveal_file_location};
 use commands::persistent::{
-    send_persistent_message, start_persistent_session, stop_persistent_session,
-    PersistentSessions,
+    probe_slash_commands, send_persistent_message, start_persistent_session,
+    stop_persistent_session, PersistentSessions,
 };
 use commands::claude::{
     cancel_claude_execution, check_auto_checkpoint, check_claude_version, cleanup_old_checkpoints,
@@ -201,6 +201,7 @@ fn main() {
             read_file_preview,
             reveal_file_location,
             start_persistent_session,
+            probe_slash_commands,
             send_persistent_message,
             stop_persistent_session,
             create_project,

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Bot, FolderCode } from "lucide-react";
 import { api, type Project, type Session, type ClaudeMdFile } from "@/lib/api";
+import { getLiveSlashCommands, setLiveSlashCommands } from "@/lib/slashCommandRegistry";
 import { initializeWebMode } from "@/lib/apiAdapter";
 import { OutputCacheProvider } from "@/lib/outputCache";
 import { TabProvider } from "@/contexts/TabContext";
@@ -98,6 +99,30 @@ function AppContent() {
       setLoading(false);
     }
   }, [view]);
+
+  // The CLI only reveals its slash commands when a session starts, which used to
+  // mean typing a real message first. Probe it once on launch instead (a
+  // one-character haiku turn) and cache the result, so this is not repeated.
+  useEffect(() => {
+    if (getLiveSlashCommands().length > 0) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const names = await api.probeSlashCommands();
+        if (!cancelled && names.length > 0) {
+          setLiveSlashCommands(names);
+        }
+      } catch (err) {
+        // Non-fatal: the picker falls back to the built-in list.
+        console.warn("[App] Slash command probe failed:", err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Keyboard shortcuts for tab navigation
   useEffect(() => {

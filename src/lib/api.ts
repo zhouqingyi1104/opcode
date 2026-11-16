@@ -69,6 +69,8 @@ export interface Session {
   first_message?: string;
   /** User-assigned title (from /rename or the sidebar); wins over first_message */
   custom_title?: string;
+  /** Context size of the last request; resuming replays this much history */
+  context_tokens?: number;
   /** Timestamp of the first user message (if available) */
   message_timestamp?: string;
 }
@@ -569,6 +571,21 @@ export const api = {
       console.error("Failed to delete project:", error);
       throw error;
     }
+  },
+
+  /**
+   * Asks the CLI for its slash-command list without sending a real message.
+   *
+   * The list only arrives with the CLI's init event, which requires a turn to
+   * be opened, so the backend spins up a throwaway haiku session with a
+   * one-character prompt, reads init and kills it (a fraction of a cent).
+   */
+  async probeSlashCommands(): Promise<string[]> {
+    if (isTauriRuntime()) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return invoke<string[]>("probe_slash_commands");
+    }
+    return apiCall<string[]>("probe_slash_commands");
   },
 
   /**
