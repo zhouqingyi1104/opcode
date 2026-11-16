@@ -638,8 +638,10 @@ export const BashWidget: React.FC<{
   // The header collapses the whole card, so a finished call can be reduced to a
   // single line without losing the fact that it ran.
   const [cardCollapsed, setCardCollapsed] = useState(false);
-  const COLLAPSED_LINES = 8;
-  const AUTO_COLLAPSE_ABOVE = 12;
+  // Anything past six lines collapses; four stay visible so the card still
+  // shows what kind of output it is.
+  const COLLAPSED_LINES = 4;
+  const AUTO_COLLAPSE_ABOVE = 6;
 
   // Extract result content if available
   let resultContent = '';
@@ -1557,8 +1559,10 @@ export const CommandOutputWidget: React.FC<{
   // Same rule as the bash widget: long stdout is collapsed until asked for.
   const [expanded, setExpanded] = useState(false);
   const [cardCollapsed, setCardCollapsed] = useState(false);
-  const COLLAPSED_LINES = 8;
-  const AUTO_COLLAPSE_ABOVE = 12;
+  // Anything past six lines collapses; four stay visible so the card still
+  // shows what kind of output it is.
+  const COLLAPSED_LINES = 4;
+  const AUTO_COLLAPSE_ABOVE = 6;
   const lines = output ? output.split('\n') : [];
   const isLong = lines.length > AUTO_COLLAPSE_ABOVE;
   const visibleText =
