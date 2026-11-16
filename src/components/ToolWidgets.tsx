@@ -635,6 +635,9 @@ export const BashWidget: React.FC<{
   // Long command output is collapsed by default: a directory listing or a build
   // log can run for hundreds of lines and bury the rest of the conversation.
   const [outputExpanded, setOutputExpanded] = useState(false);
+  // The header collapses the whole card, so a finished call can be reduced to a
+  // single line without losing the fact that it ran.
+  const [cardCollapsed, setCardCollapsed] = useState(false);
   const COLLAPSED_LINES = 8;
   const AUTO_COLLAPSE_ABOVE = 12;
 
@@ -658,41 +661,63 @@ export const BashWidget: React.FC<{
       }
     }
   }
-  
+
+  const outputLines = resultContent ? resultContent.split('\n') : [];
+  const isLongOutput = outputLines.length > AUTO_COLLAPSE_ABOVE;
+  const visibleOutput =
+    isLongOutput && !outputExpanded
+      ? `${outputLines.slice(0, COLLAPSED_LINES).join('\n')}\n…`
+      : resultContent;
+
   return (
     <div className="rounded-lg border bg-background overflow-hidden">
-      <div className="px-4 py-2 bg-muted/50 flex items-center gap-2 border-b">
-        <Terminal className="h-3.5 w-3.5 text-green-500" />
+      <button
+        type="button"
+        onClick={() => setCardCollapsed((v) => !v)}
+        aria-expanded={!cardCollapsed}
+        className={cn(
+          "flex w-full items-center gap-2 px-4 py-2 text-left transition-colors hover:bg-accent/60",
+          "bg-muted/50",
+          !cardCollapsed && "border-b"
+        )}
+      >
+        <ChevronRight
+          className={cn(
+            "h-3 w-3 shrink-0 text-muted-foreground transition-transform",
+            !cardCollapsed && "rotate-90"
+          )}
+        />
+        <Terminal className="h-3.5 w-3.5 shrink-0 text-green-500" />
         <span className="text-xs font-mono text-muted-foreground">Terminal</span>
         {description && (
           <>
-            <ChevronRight className="h-3 w-3 text-muted-foreground" />
-            <span className="text-xs text-muted-foreground">{description}</span>
+            <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+            <span className="truncate text-xs text-muted-foreground">{description}</span>
           </>
         )}
         {/* Show loading indicator when no result yet */}
         {!result && (
-          <div className="ml-auto flex items-center gap-1 text-xs text-muted-foreground">
+          <div className="ml-auto flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
             <div className="h-2 w-2 bg-green-500 rounded-full animate-pulse" />
             <span>Running...</span>
           </div>
         )}
-      </div>
-      <div className="p-4 space-y-3">
-        <code className="text-xs font-mono text-green-400 block">
-          $ {command}
-        </code>
-        
-        {/* Show result if available */}
-        {result && (() => {
-          const lines = resultContent ? resultContent.split('\n') : [];
-          const isLongOutput = lines.length > AUTO_COLLAPSE_ABOVE;
-          const visibleOutput =
-            isLongOutput && !outputExpanded
-              ? `${lines.slice(0, COLLAPSED_LINES).join('\n')}\n…`
-              : resultContent;
+        {cardCollapsed && result && (
+          <span className="ml-auto shrink-0 text-caption text-muted-foreground">
+            {isError ? "失败" : ""}
+            {outputLines.length > 0 ? `${isError ? " · " : ""}${outputLines.length} 行` : ""}
+          </span>
+        )}
+      </button>
 
-          return (
+      {!cardCollapsed && (
+        <div className="p-4 space-y-3">
+          <code className="text-xs font-mono text-green-400 block">
+            $ {command}
+          </code>
+
+          {/* Show result if available */}
+          {result && (
             <>
               <div className={cn(
                 "mt-3 p-3 rounded-md border text-xs font-mono whitespace-pre-wrap overflow-x-auto",
@@ -717,15 +742,15 @@ export const BashWidget: React.FC<{
                   ) : (
                     <>
                       <ChevronDown className="h-3 w-3" />
-                      展开全部（共 {lines.length} 行）
+                      展开全部（共 {outputLines.length} 行）
                     </>
                   )}
                 </button>
               )}
             </>
-          );
-        })()}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -1531,6 +1556,7 @@ export const CommandOutputWidget: React.FC<{
 }> = ({ output, onLinkDetected }) => {
   // Same rule as the bash widget: long stdout is collapsed until asked for.
   const [expanded, setExpanded] = useState(false);
+  const [cardCollapsed, setCardCollapsed] = useState(false);
   const COLLAPSED_LINES = 8;
   const AUTO_COLLAPSE_ABOVE = 12;
   const lines = output ? output.split('\n') : [];
@@ -1591,34 +1617,54 @@ export const CommandOutputWidget: React.FC<{
 
   return (
     <div className="rounded-lg border bg-background/50 overflow-hidden">
-      <div className="px-4 py-2 bg-muted/50 flex items-center gap-2">
-        <ChevronRight className="h-3 w-3 text-green-500" />
-        <span className="text-xs font-mono text-green-400">Output</span>
-      </div>
-      <div className="p-3">
-        <pre className="text-sm font-mono text-zinc-300 whitespace-pre-wrap">
-          {output ? parseAnsiToReact(visibleText) : <span className="text-zinc-500 italic">No output</span>}
-        </pre>
-        {isLong && (
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            className="mt-1 flex items-center gap-1 rounded px-1.5 py-1 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          >
-            {expanded ? (
-              <>
-                <ChevronUp className="h-3 w-3" />
-                收起输出
-              </>
-            ) : (
-              <>
-                <ChevronDown className="h-3 w-3" />
-                展开全部（共 {lines.length} 行）
-              </>
-            )}
-          </button>
+      <button
+        type="button"
+        onClick={() => setCardCollapsed((v) => !v)}
+        aria-expanded={!cardCollapsed}
+        className={cn(
+          "flex w-full items-center gap-2 px-4 py-2 text-left transition-colors hover:bg-accent/60",
+          "bg-muted/50"
         )}
-      </div>
+      >
+        <ChevronRight
+          className={cn(
+            "h-3 w-3 shrink-0 text-muted-foreground transition-transform",
+            !cardCollapsed && "rotate-90"
+          )}
+        />
+        <span className="text-xs font-mono text-green-400">Output</span>
+        {cardCollapsed && (
+          <span className="ml-auto shrink-0 text-caption text-muted-foreground">
+            {lines.length > 0 ? `${lines.length} 行` : ""}
+          </span>
+        )}
+      </button>
+      {!cardCollapsed && (
+        <div className="p-3">
+          <pre className="text-sm font-mono text-zinc-300 whitespace-pre-wrap">
+            {output ? parseAnsiToReact(visibleText) : <span className="text-zinc-500 italic">No output</span>}
+          </pre>
+          {isLong && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="mt-1 flex items-center gap-1 rounded px-1.5 py-1 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              {expanded ? (
+                <>
+                  <ChevronUp className="h-3 w-3" />
+                  收起输出
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="h-3 w-3" />
+                  展开全部（共 {lines.length} 行）
+                </>
+              )}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 };
